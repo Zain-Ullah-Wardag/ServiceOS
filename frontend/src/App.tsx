@@ -2,6 +2,10 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 
 import Landing from './pages/Landing';
 import Login from './pages/Login';
+import Customers from './pages/Customers';
+import Measurements from './pages/Measurements';
+import Garments from './pages/Garments';
+import Production from './pages/Production';
 import Dashboard from './pages/Dashboard';
 import BusinessPage from './pages/BusinessPage';
 import TrackOrder from './pages/TrackOrder';
