@@ -7,7 +7,7 @@ describe('Guest Order & Tracking', () => {
     const res = await request(app)
       .post('/api/v1/public/business/zain-tailors/orders')
       .send({ customerName: 'Guest User', customerPhone: '+920001111', serviceId: undefined, notes: 'Test' });
-    expect([201, 404]).toContain(res.status); // 201 if DB/service exists; 404 if service missing
+    expect(res.status).toBe(201); // must succeed for valid tenant service
     if (res.status === 201) {
       expect(res.body.success).toBe(true);
       expect(res.body.data.orderNumber).toBeDefined();
@@ -17,5 +17,12 @@ describe('Guest Order & Tracking', () => {
   it('GET tracking with valid token format works', async () => {
     const res = await request(app).get('/api/v1/public/orders/ORD-123-test-token-abc');
     expect([200, 404]).toContain(res.status);
+  });
+}
+  it('Guest order with cross-tenant serviceId must be rejected', async () => {
+    const res = await request(app)
+      .post('/api/v1/public/business/zain-tailors/orders')
+      .send({ customerName: 'Injector', customerPhone: '+999999', serviceId: '00000000-0000-0000-0000-000000000000', notes: 'bad' });
+    expect([400, 404, 403]).toContain(res.status);
   });
 });
