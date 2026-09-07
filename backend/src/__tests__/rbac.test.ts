@@ -6,13 +6,11 @@ import prisma from '../lib/prisma';
 describe('RBAC', () => {
   it('owner can read customers with token', async () => {
     const login = await request(app).post('/api/v1/auth/login').send({ email: 'owner@serviceos.local', password: 'password123' });
-    if (login.status === 200 && login.body.data?.token) {
-      const res = await request(app).get('/api/v1/customers').set('Authorization', `Bearer ${login.body.data.token}`);
-      expect(res.status).toBe(200);
-    } else {
-      // DB unavailable — do not claim pass falsely; record status
-      console.log('RBAC test skipped: login returned', login.status);
-    }
+    expect(login.status).toBe(200);
+    expect(login.body.data?.token).toBeDefined();
+    const res = await request(app).get('/api/v1/customers').set('Authorization', `Bearer ${login.body.data.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
   });
 
   it('missing permission returns 403 when enforced', async () => {
