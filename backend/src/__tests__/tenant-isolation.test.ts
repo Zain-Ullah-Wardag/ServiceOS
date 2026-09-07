@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import app from '../app';
@@ -11,6 +12,8 @@ describe('Tenant Isolation', () => {
   let customerBId = '';
   let orderAId = '';
   let serviceAId = '';
+  let serviceBId = '';
+  let orderBId = '';
 
   beforeAll(async () => {
     try {
@@ -28,9 +31,10 @@ describe('Tenant Isolation', () => {
     tenantBId = tB.id;
 
     // Create users
+    const pwHash = await bcrypt.hash('password123', 12);
     const [uA, uB] = await Promise.all([
-      prisma.user.upsert({ where: { email: 'test-owner-a@test.local' }, update: {}, create: { name: 'Owner A', email: 'test-owner-a@test.local', phone: '+0000000001', passwordHash: 'dummy', status: 'active', emailVerified: true } }),
-      prisma.user.upsert({ where: { email: 'test-owner-b@test.local' }, update: {}, create: { name: 'Owner B', email: 'test-owner-b@test.local', phone: '+0000000002', passwordHash: 'dummy', status: 'active', emailVerified: true } }),
+      prisma.user.upsert({ where: { email: 'test-owner-a@test.local' }, update: {}, create: { name: 'Owner A', email: 'test-owner-a@test.local', phone: '+0000000001', passwordHash: pwHash, status: 'active', emailVerified: true } }),
+      prisma.user.upsert({ where: { email: 'test-owner-b@test.local' }, update: {}, create: { name: 'Owner B', email: 'test-owner-b@test.local', phone: '+0000000002', passwordHash: pwHash, status: 'active', emailVerified: true } }),
     ]);
 
     // Roles
@@ -70,6 +74,8 @@ describe('Tenant Isolation', () => {
     // Create fixtures via direct Prisma for speed
     const svcA = await prisma.service.create({ data: { tenantId: tenantAId, name: 'Test Service A', price: 100, duration: 30, status: 'active', requiresBooking: false, requiresDelivery: false } });
     serviceAId = svcA.id;
+    const svcB = await prisma.service.create({ data: { tenantId: tenantB.id, name: 'Test Service B', price: 200, duration: 25, status: 'active', requiresBooking: false, requiresDelivery: false } });
+    serviceBId = svcB.id;
 
     const custA = await prisma.customer.create({ data: { tenantId: tenantAId, name: 'Customer A', phone: '+111', status: 'active' } });
     customerAId = custA.id;
@@ -79,6 +85,8 @@ describe('Tenant Isolation', () => {
 
     const orderA = await prisma.order.create({ data: { tenantId: tenantAId, customerId: customerAId, orderNumber: 'ORD-TEST-A-001', status: 'received' } });
     orderAId = orderA.id;
+    const orderB = await prisma.order.create({ data: { tenantId: tenantBId, customerId: customerBId, orderNumber: 'ORD-TEST-B-001', status: 'received' } });
+    orderBId = orderB.id;
   } catch (e: any) {
     console.error('Fixture setup error (DB may be unavailable):', e.message);
     throw e;
@@ -87,11 +95,9 @@ describe('Tenant Isolation', () => {
 
   afterAll(async () => {
     try {
-      // Safe cleanup only for fixture records; use identifiers
       await prisma.customer.deleteMany({ where: { phone: { in: ['+111', '+222'] } } });
       await prisma.order.deleteMany({ where: { orderNumber: { startsWith: 'ORD-TEST-' } } });
-      await prisma.service.deleteMany({ where: { name: 'Test Service A' } });
-      await prisma.tenantUser.deleteMany({ where: { userId: { in: [] } } }); // simplified
+      await prisma.service.deleteMany({ where: { name: { in: ['Test Service A', 'Test Service B'] } } });
       await prisma.$disconnect();
     } catch {
       // Ignore cleanup errors
@@ -125,7 +131,7 @@ describe('Tenant Isolation', () => {
   });
 
   it('Tenant A cannot read/update Tenant B order', async () => {
-    const res = await request(app).get(`/api/v1/orders/${orderAId}`) // note: using A order; but we need B order to test isolation
+    const res = await request(app).get(`/api/v1/orders/${orderBId}`) // note: using A order; but we need B order to test isolation
       .set('Authorization', `Bearer ${tokenA}`);
     // For B order isolation, we'd need B order ID; but if DB unavailable we verify safe response
     expect([200, 403, 404]).toContain(res.status);
