@@ -1,0 +1,1 @@
+export const tailoringConfig = { name: 'Tailoring', nav: ['Dashboard','Customers','Measurements','Services','Bookings','Orders','Production','Staff','Invoices','Payments','Analytics','AI Assistant','Settings'] };

@@ -1,0 +1,1 @@
+import { tailoringConfig } from './tailoring/config'; import { clinicConfig } from './clinic/config'; import { labConfig } from './lab/config'; export const industryModules = { tailoring: tailoringConfig, clinic: clinicConfig, laboratory: labConfig };
