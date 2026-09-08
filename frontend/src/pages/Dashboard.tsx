@@ -1066,46 +1066,57 @@ function MeasurementsModule({
   refresh,
 }: any) {
   const [showForm, setShowForm] = useState(false);
+  const [fieldsConfig, setFieldsConfig] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [garments, setGarments] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [form, setForm] = useState({
-    customerId: '', garmentId: '',
-    neck: '', chest: '', waist: '', shoulder: '', sleeve: '', shirtLength: '', trouserLength: '', bottom: '', notes: '',
-  });
+  const [measures, setMeasures] = useState<Record<string, string>>({});
+  const [notes, setNotes] = useState('');
+  const [customerId, setCustomerId] = useState('');
+  const [garmentId, setGarmentId] = useState('');
 
   useEffect(() => {
     if (!showForm) return;
+    api('/tailoring/measurement-fields').then((r: any) => { if (r?.success) setFieldsConfig(r.data || []); });
     api('/customers').then((r: any) => { if (r?.success) setCustomers(r.data || []); });
     api('/tailoring/garments').then((r: any) => { if (r?.success) setGarments(r.data || []); });
   }, [showForm]);
 
-  const handleChange = (k: string, v: string) => {
-    setForm((prev) => ({ ...prev, [k]: v }));
-    if (formErrors[k]) setFormErrors((prev) => { const n = { ...prev }; delete n[k]; return n; });
+  useEffect(() => {
+    if (showForm && fieldsConfig.length > 0) {
+      const init: Record<string, string> = {};
+      for (const f of fieldsConfig) init[f.name] = '';
+      setMeasures(init);
+      setNotes('');
+      setCustomerId('');
+      setGarmentId('');
+      setFormErrors({});
+    }
+  }, [showForm, fieldsConfig]);
+
+  const handleMeasureChange = (key: string, value: string) => {
+    setMeasures(prev => ({ ...prev, [key]: value }));
+    if (formErrors[key]) setFormErrors(prev => { const n={...prev}; delete n[key]; return n; });
   };
 
   const validate = () => {
     const errs: Record<string, string> = {};
-    if (!form.customerId) errs.customerId = 'Select a customer';
-    const fields = [
-      { key: 'neck', label: 'Neck' },
-      { key: 'chest', label: 'Chest' },
-      { key: 'waist', label: 'Waist' },
-      { key: 'shoulder', label: 'Shoulder' },
-      { key: 'sleeve', label: 'Sleeve' },
-      { key: 'shirtLength', label: 'Shirt Length' },
-      { key: 'trouserLength', label: 'Trouser Length' },
-      { key: 'bottom', label: 'Bottom' },
-    ];
+    if (!customerId) errs.customerId = 'Select a customer';
+    if (fieldsConfig.length === 0) errs.fields = 'No measurement fields configured';
     let hasValue = false;
-    for (const f of fields) {
-      const raw = (form as any)[f.key];
-      if (raw !== '' && raw !== undefined && raw !== null) {
-        const n = parseFloat(raw);
-        if (isNaN(n)) errs[f.key] = 'Enter a valid number';
-        else if (n < 0) errs[f.key] = 'Cannot be negative';
+    for (const f of fieldsConfig) {
+      const raw = measures[f.name] || '';
+      if (f.type === 'number' || f.type === 'integer') {
+        if (raw === '') errs[f.name] = 'Required';
+        else {
+          const n = parseFloat(raw);
+          if (isNaN(n)) errs[f.name] = 'Valid number required';
+          else if (n < 0) errs[f.name] = 'Cannot be negative';
+          else hasValue = true;
+        }
+      } else {
+        if (raw === '') errs[f.name] = 'Required';
         else hasValue = true;
       }
     }
@@ -1118,38 +1129,40 @@ function MeasurementsModule({
     if (!validate()) return;
     setSaving(true);
     try {
-      const fieldsObj: Record<string, number> = {};
-      const fieldKeys = ['neck','chest','waist','shoulder','sleeve','shirtLength','trouserLength','bottom'];
-      for (const k of fieldKeys) {
-        const v = (form as any)[k];
-        if (v !== '' && v !== undefined && v !== null) fieldsObj[k] = parseFloat(v);
+      const fieldsObj: Record<string, any> = {};
+      for (const f of fieldsConfig) {
+        const raw = measures[f.name] || '';
+        if (f.type === 'number' || f.type === 'integer') {
+          fieldsObj[f.name] = parseFloat(raw);
+        } else {
+          fieldsObj[f.name] = raw;
+        }
       }
-      const payload: any = {
-        customerId: form.customerId,
-        fields: fieldsObj,
-        notes: form.notes || undefined,
-      };
-      if (form.garmentId) payload.garmentId = form.garmentId;
-      const res = await api('/tailoring/measurements', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
+      const payload: any = { customerId, fields: fieldsObj, notes: notes || undefined };
+      if (garmentId) payload.garmentId = garmentId;
+      const res = await api('/tailoring/measurements', { method: 'POST', body: JSON.stringify(payload) });
       if (!res?.success) throw new Error(res?.error?.message || 'Save failed');
       setShowForm(false);
-      setForm({ customerId: '', garmentId: '', neck: '', chest: '', waist: '', shoulder: '', sleeve: '', shirtLength: '', trouserLength: '', bottom: '', notes: '' });
+      setMeasures({});
+      setNotes('');
+      setCustomerId('');
+      setGarmentId('');
       refresh();
     } catch (e: any) {
-      setFormErrors((prev) => ({ ...prev, submit: e.message || 'Save failed' }));
-    } finally {
-      setSaving(false);
-    }
+      setFormErrors(prev => ({ ...prev, submit: e.message || 'Save failed' }));
+    } finally { setSaving(false); }
   };
 
   const formatFields = (fields: any) => {
     if (!fields || typeof fields !== 'object') return '—';
-    return Object.entries(fields)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join(', ');
+    if (fieldsConfig.length > 0) {
+      return fieldsConfig.map((f: any) => {
+        const val = fields[f.name];
+        if (val === undefined || val === null || val === '') return null;
+        return f.label ? `${f.label}: ${val}` : `${f.name}: ${val}`;
+      }).filter(Boolean).join('  |  ');
+    }
+    return Object.entries(fields).map(([k,v]) => `${k}: ${v}`).join(', ');
   };
 
   return (
@@ -1169,76 +1182,52 @@ function MeasurementsModule({
       {showForm && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
           <h3 className="font-serif text-xl mb-4">New Measurement</h3>
-          <div className="grid md:grid-cols-2 gap-4 mb-4">
+          <div className="grid md:grid-cols-2 gap-3 mb-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Customer</label>
-              <select value={form.customerId} onChange={e => handleChange('customerId', e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Customer</label>
+              <select value={customerId} onChange={e => { setCustomerId(e.target.value); if (formErrors.customerId) setFormErrors(prev => { const n={...prev}; delete n.customerId; return n; }); }} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
                 <option value="">Select customer</option>
-                {customers.map((c: any) => (
-                  <option key={c.id} value={c.id}>{c.name || c.email || c.id}</option>
-                ))}
+                {customers.map((c: any) => <option key={c.id} value={c.id}>{c.name || c.email || c.id}</option>)}
               </select>
               {formErrors.customerId && <p className="text-xs text-red-600 mt-1">{formErrors.customerId}</p>}
             </div>
             <div>
-              <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Garment (optional)</label>
-              <select value={form.garmentId} onChange={e => handleChange('garmentId', e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Garment (optional)</label>
+              <select value={garmentId} onChange={e => setGarmentId(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
                 <option value="">Select garment</option>
-                {garments.map((g: any) => (
-                  <option key={g.id} value={g.id}>{g.name || g.id}</option>
-                ))}
+                {garments.map((g: any) => <option key={g.id} value={g.id}>{g.name || g.id}</option>)}
               </select>
             </div>
           </div>
-
-          <div className="grid md:grid-cols-4 gap-3 mb-4">
-            {[
-              { key: 'neck', label: 'Neck (in)' },
-              { key: 'chest', label: 'Chest (in)' },
-              { key: 'waist', label: 'Waist (in)' },
-              { key: 'shoulder', label: 'Shoulder (in)' },
-              { key: 'sleeve', label: 'Sleeve (in)' },
-              { key: 'shirtLength', label: 'Shirt Length (in)' },
-              { key: 'trouserLength', label: 'Trouser Length (in)' },
-              { key: 'bottom', label: 'Bottom (in)' },
-            ].map((f) => (
-              <div key={f.key}>
-                <label className="block text-xs font-medium text-slate-600 mb-1">{f.label}</label>
+          <div className="grid md:grid-cols-4 gap-3 mb-3">
+            {fieldsConfig.map((f: any) => (
+              <div key={f.name}>
+                <label className="block text-xs font-medium text-slate-600 mb-1">{f.label || f.name}</label>
                 <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  value={(form as any)[f.key]}
-                  onChange={e => handleChange(f.key, e.target.value)}
+                  type={f.type === 'number' || f.type === 'integer' ? 'number' : 'text'}
+                  step={f.type === 'number' ? '0.1' : undefined}
+                  min={f.type === 'number' || f.type === 'integer' ? '0' : undefined}
+                  value={measures[f.name] || ''}
+                  onChange={e => handleMeasureChange(f.name, e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm"
-                  placeholder="0.0"
+                  placeholder=""
                 />
-                {formErrors[f.key] && <p className="text-xs text-red-600 mt-0.5">{formErrors[f.key]}</p>}
+                {formErrors[f.name] && <p className="text-xs text-red-600 mt-0.5">{formErrors[f.name]}</p>}
               </div>
             ))}
           </div>
-
-          <div className="mb-4">
-            <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Notes</label>
-            <textarea
-              rows={2}
-              value={form.notes}
-              onChange={e => handleChange('notes', e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm"
-              placeholder="Additional notes..."
-            />
+          <div className="mb-3">
+            <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Notes</label>
+            <textarea rows={2} value={notes} onChange={e => setNotes(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm" placeholder="Additional notes..." />
           </div>
-
           {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
           {formErrors.fields && <p className="text-sm text-red-600 mb-2">{formErrors.fields}</p>}
-
           <div className="flex gap-2">
             <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-900 text-white rounded-lg font-medium text-sm hover:bg-brand-800 disabled:opacity-50">{saving ? 'Saving...' : 'Save Measurement'}</button>
             <button onClick={() => { setShowForm(false); setFormErrors({}); }} className="px-4 py-2 bg-slate-100 rounded-lg font-medium text-sm">Cancel</button>
           </div>
         </div>
       )}
-
       <DataTable
         headers={['Customer', 'Garment', 'Measurements', 'Notes', 'Created']}
         rows={rows.map((row: any) => [

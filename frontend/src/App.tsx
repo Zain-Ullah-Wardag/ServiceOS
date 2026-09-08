@@ -20,7 +20,6 @@ function App() {
 
       {/* All admin pages */}
       <Route path="/dashboard/*" element={<Dashboard />} />
-      <Route path="/dashboard/customers" element={<Customers />} />
 
       <Route path="/b/:slug" element={<BusinessPage />} />
       <Route path="/track/:token" element={<TrackOrder />} />
