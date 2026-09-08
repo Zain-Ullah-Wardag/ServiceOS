@@ -1071,27 +1071,14 @@ function MeasurementsModule({
   const [saving, setSaving] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
-    customerId: '',
-    garmentId: '',
-    neck: '',
-    chest: '',
-    waist: '',
-    shoulder: '',
-    sleeve: '',
-    shirtLength: '',
-    trouserLength: '',
-    bottom: '',
-    notes: '',
+    customerId: '', garmentId: '',
+    neck: '', chest: '', waist: '', shoulder: '', sleeve: '', shirtLength: '', trouserLength: '', bottom: '', notes: '',
   });
 
   useEffect(() => {
     if (!showForm) return;
-    api('/customers').then((r: any) => {
-      if (r?.success) setCustomers(r.data || []);
-    });
-    api('/tailoring/garments').then((r: any) => {
-      if (r?.success) setGarments(r.data || []);
-    });
+    api('/customers').then((r: any) => { if (r?.success) setCustomers(r.data || []); });
+    api('/tailoring/garments').then((r: any) => { if (r?.success) setGarments(r.data || []); });
   }, [showForm]);
 
   const handleChange = (k: string, v: string) => {
@@ -1102,7 +1089,6 @@ function MeasurementsModule({
   const validate = () => {
     const errs: Record<string, string> = {};
     if (!form.customerId) errs.customerId = 'Select a customer';
-    const vals: Record<string, number> = {};
     const fields = [
       { key: 'neck', label: 'Neck' },
       { key: 'chest', label: 'Chest' },
@@ -1118,14 +1104,9 @@ function MeasurementsModule({
       const raw = (form as any)[f.key];
       if (raw !== '' && raw !== undefined && raw !== null) {
         const n = parseFloat(raw);
-        if (isNaN(n)) {
-          errs[f.key] = 'Enter a valid number';
-        } else if (n < 0) {
-          errs[f.key] = 'Cannot be negative';
-        } else {
-          hasValue = true;
-          vals[f.key] = n;
-        }
+        if (isNaN(n)) errs[f.key] = 'Enter a valid number';
+        else if (n < 0) errs[f.key] = 'Cannot be negative';
+        else hasValue = true;
       }
     }
     if (!hasValue) errs.fields = 'Enter at least one measurement';
@@ -1179,12 +1160,12 @@ function MeasurementsModule({
       error={error}
       refresh={refresh}
       count={rows.length}
-      action={
+    >
+      <div className="flex justify-end mb-4">
         <button onClick={() => { setShowForm(!showForm); if (showForm) setFormErrors({}); }} className="flex items-center gap-2 px-4 py-2 bg-brand-900 text-white rounded-xl text-sm font-medium hover:bg-brand-800 transition">
           {showForm ? 'Cancel' : 'New Measurement'}
         </button>
-      }
-    >
+      </div>
       {showForm && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
           <h3 className="font-serif text-xl mb-4">New Measurement</h3>
@@ -1271,11 +1252,6 @@ function MeasurementsModule({
     </ModuleWrapper>
   );
 }
-
-
-/* =========================================================
-   GARMENTS
-========================================================= */
 
 function GarmentsModule({
   rows,

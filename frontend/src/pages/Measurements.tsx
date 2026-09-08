@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Ruler, Plus, ArrowLeft, CheckCircle } from 'lucide-react';
+import { Ruler, Plus, ArrowLeft } from 'lucide-react';
 import { api } from '../lib/api';
 
 export default function Measurements() {
@@ -88,7 +88,6 @@ export default function Measurements() {
           <h1 className="font-serif text-3xl tracking-tight flex items-center gap-3"><Ruler size={28}/> Measurements</h1>
           <button onClick={() => { setShowForm(!showForm); if (showForm) setErrors({}); }} className="flex items-center gap-2 px-4 py-2 bg-brand-900 text-white rounded-xl font-medium"><Plus size={18}/> {showForm ? 'Cancel' : 'New Measurement'}</button>
         </div>
-
         {showForm && (
           <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
             <h3 className="font-semibold mb-3">New Measurement</h3>
@@ -133,7 +132,6 @@ export default function Measurements() {
             </div>
           </div>
         )}
-
         {loading ? (
           <div className="text-center py-12 text-slate-400">Loading measurements...</div>
         ) : items.length === 0 ? (
