@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronRight, CheckCircle, Plus } from 'lucide-react';
+import { ArrowLeft, ChevronRight, CheckCircle, Plus, Star } from 'lucide-react';
 import { api } from '../lib/api';
 
 const STEPS = ['Customer', 'Service', 'Measurement', 'Garment', 'Details', 'Review'];
@@ -11,7 +11,9 @@ export default function OrderWizard() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
   const [measurements, setMeasurements] = useState<any[]>([]);
+  
   const [garments, setGarments] = useState<any[]>([]);
+  
   const [staff, setStaff] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -75,6 +77,7 @@ export default function OrderWizard() {
       if (delivery) payload.deliveryDate = delivery;
       if (selGarment) payload.garmentId = selGarment;
       if (selStaff) payload.staffId = selStaff;
+      if (selMeasurement) payload.measurementId = selMeasurement;
       const tailRes = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify(payload) });
       if (!tailRes?.success) throw new Error(tailRes?.error?.message || 'Tailoring order failed');
       setSuccess(true);
@@ -143,7 +146,7 @@ export default function OrderWizard() {
               {step === 3 && (
                 <div>
                   <h3 className="font-semibold mb-3">Garment / Design</h3>
-                  <select value={selGarment} onChange={e => setSelGarment(e.target.value)} className="w-full md:w-1/2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option value="">Select existing garment (optional)</option>{garments.map(g => <option key={g.id} value={g.id}>{g.name || g.id}</option>)}</select>
+                  <select value={selGarment} onChange={e => setSelGarment(e.target.value)} className="w-full md:w-1/2 px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option value="">Select existing garment (optional)</option>{(selCustomer ? garments.filter((g:any) => g.customerId === selCustomer || g.customer?.id === selCustomer) : garments).map(g => <option key={g.id} value={g.id}>{g.name || g.id}</option>)}</select>
                 </div>
               )}
               {step === 4 && (

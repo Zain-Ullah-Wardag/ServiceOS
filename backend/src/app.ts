@@ -300,6 +300,7 @@ app.post(
           phone,
           email: email || null,
           address: address || null,
+          measurementId: measurementId || null,
           notes: notes || null,
           status: 'active',
         },
@@ -658,6 +659,7 @@ app.post(
         startTime,
         endTime,
         status,
+        measurementId,
         notes,
       } = req.body;
 
@@ -724,6 +726,7 @@ app.post(
           startTime: new Date(startTime || bookingDate),
           endTime: new Date(endTime || bookingDate),
           status: status || 'pending',
+          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -887,6 +890,7 @@ app.post(
           priority: priority || 'normal',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           status: 'received',
+          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -1026,6 +1030,7 @@ app.post(
           orderId: order.id,
           status,
           changedBy: req.user?.id || 'system',
+          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -2021,6 +2026,7 @@ app.post(
         status,
         deliveryDate,
         priority,
+        measurementId,
         notes,
       } = req.body;
 
@@ -2096,6 +2102,39 @@ app.post(
         }
       }
 
+      if (measurementId) {
+        const measurement = await prisma.measurement.findFirst({
+          where: { id: measurementId, tenantId: req.tenantId! },
+        });
+        if (!measurement) {
+          return res.status(400).json({
+            success: false,
+            error: { code: 'INVALID_MEASUREMENT', message: 'Measurement does not belong to this tenant' },
+          });
+        }
+      }
+
+      let resolvedOrderId = orderId;
+      if (!resolvedOrderId && customerId && items && Array.isArray(items)) {
+        const order = await prisma.order.create({
+          data: {
+            tenantId: req.tenantId!,
+            customerId,
+            status: 'pending',
+            items: {
+              create: items.map((it: any) => ({
+                serviceId: it.serviceId || it.service_id,
+                quantity: it.quantity || 1,
+                price: it.price || 0,
+              })),
+            },
+          },
+        });
+        resolvedOrderId = order.id;
+      }
+      if (!resolvedOrderId) {
+        return res.status(400).json({ success: false, error: { code: 'MISSING_ORDER', message: 'orderId is required' } });
+      }
       const tailoringOrder = await prisma.tailoringOrder.create({
         data: {
           tenantId: req.tenantId!,
@@ -2106,6 +2145,7 @@ app.post(
           status: status || 'received',
           deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
           priority: priority || 'normal',
+          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -2442,6 +2482,7 @@ app.post(
           orderNumber: number,
           status: 'received',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
+          measurementId: measurementId || null,
           notes: notes || null,
         },
       });

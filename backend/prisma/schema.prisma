@@ -559,6 +559,7 @@ model TailoringOrder {
   orderId      String    @map("order_id")
   customerId   String    @map("customer_id")
   garmentId    String?   @map("garment_id")
+  measurementId String? @map("measurement_id")
   staffId      String?   @map("staff_id")
   status       String    @default("received") // received, measurement, cutting, stitching, finishing, quality_check, ready, delivered, cancelled
   deliveryDate DateTime? @map("delivery_date")

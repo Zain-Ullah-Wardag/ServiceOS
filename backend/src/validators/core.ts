@@ -113,6 +113,7 @@ export const tailoringOrderCreateSchema = z.object({
   staffId: z.string().optional(),
   status: z.string().optional(),
   deliveryDate: z.string().optional(),
-  priority: z.enum(['low', 'normal', 'high']).optional(),
+  priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
+  measurementId: z.string().optional(),
   notes: z.string().optional(),
 });
