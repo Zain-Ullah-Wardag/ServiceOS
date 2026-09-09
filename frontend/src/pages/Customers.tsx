@@ -11,6 +11,7 @@ export default function Customers() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', phone: '', email: '', address: '', notes: '' });
   const [editId, setEditId] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string,string>>({});
 
   const load = async () => {
     setLoading(true);
@@ -34,12 +35,12 @@ export default function Customers() {
       setEditId(null);
       setShowForm(false);
       load();
-    } catch (e: any) { alert(e.message || 'Error'); }
+    } catch (e: any) { setFormErrors(prev => ({ ...prev, submit: e.message || 'Error' })); }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete customer?')) return;
-    try { await api(`/customers/${id}`, { method: 'DELETE' }); load(); } catch (e: any) { alert(e.message || 'Error'); }
+    try { await api(`/customers/${id}`, { method: 'DELETE' }); load(); } catch (e: any) { setFormErrors(prev => ({ ...prev, submit: e.message || 'Error' })); }
   };
 
   return (
@@ -61,6 +62,7 @@ export default function Customers() {
               <input placeholder="Address" value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
               <textarea placeholder="Notes" rows={2} value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-2" />
             </div>
+            {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
             <div className="flex gap-2 mt-4">
               <button onClick={handleSave} className="px-5 py-2 bg-brand-900 text-white rounded-xl font-medium">Save</button>
               <button onClick={() => setShowForm(false)} className="px-5 py-2 bg-slate-100 text-slate-600 rounded-xl">Cancel</button>

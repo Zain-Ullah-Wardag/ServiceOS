@@ -6,6 +6,10 @@ import Customers from './pages/Customers';
 import Measurements from './pages/Measurements';
 import Garments from './pages/Garments';
 import Production from './pages/Production';
+import OrderWizard from './pages/OrderWizard';
+import Services from './pages/Services';
+import Staff from './pages/Staff';
+import OrderWizard from './pages/OrderWizard';
 import Dashboard from './pages/Dashboard';
 import BusinessPage from './pages/BusinessPage';
 import TrackOrder from './pages/TrackOrder';
@@ -20,6 +24,14 @@ function App() {
 
       {/* All admin pages */}
       <Route path="/dashboard/*" element={<Dashboard />} />
+      <Route path="/dashboard/customers" element={<Customers />} />
+      <Route path="/dashboard/services" element={<Services />} />
+      <Route path="/dashboard/measurements" element={<Measurements />} />
+      <Route path="/dashboard/garments" element={<Garments />} />
+      <Route path="/dashboard/production" element={<Production />} />
+      <Route path="/dashboard/orders" element={<OrderWizard />} />
+      <Route path="/dashboard/staff" element={<Staff />} />
+      <Route path="/dashboard/orders" element={<OrderWizard />} />
 
       <Route path="/b/:slug" element={<BusinessPage />} />
       <Route path="/track/:token" element={<TrackOrder />} />
