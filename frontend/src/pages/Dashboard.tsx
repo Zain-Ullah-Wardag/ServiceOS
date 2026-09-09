@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import OrderWizard from './OrderWizard';
 
 import {
   Link,
@@ -207,7 +208,9 @@ export default function Dashboard() {
       return 'dashboard';
     }
 
-    return path.split('/').pop() || 'dashboard';
+    const last = path.split('/').pop() || 'dashboard';
+    if (last === 'new' && path.includes('/orders')) return 'orders';
+    return last;
   }, [location.pathname]);
 
   const currentNavItem =
@@ -550,7 +553,7 @@ export default function Dashboard() {
           )}
 
           {activeSection === 'orders' && (
-            <OrdersModule
+            location.pathname.includes('/orders/new') ? <OrderWizard /> : <OrdersModule
               rows={sectionData}
               loading={loading}
               error={sectionError}

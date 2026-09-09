@@ -596,7 +596,11 @@ app.post(
 ========================================================= */
 
 app.get(
-  '/api/v1/bookings',
+      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  },
+
+    '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.read'),
   async (req, res) => {
@@ -636,7 +640,11 @@ app.get(
 );
 
 app.post(
-  '/api/v1/bookings',
+      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  },
+
+    '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.create'),
   validateBody(bookingCreateSchema),
@@ -1182,6 +1190,24 @@ app.post(
           message: 'Unable to create staff member',
         },
       });
+    }
+  },
+);
+
+app.get(
+  '/api/v1/tenant-users',
+  authMiddleware,
+  requirePermission('staff.read'),
+  async (req, res) => {
+    try {
+      const users = await prisma.tenantUser.findMany({
+        where: { tenantId: req.tenantId!, status: 'active' },
+        include: { user: { select: { id: true, name: true, email: true } } },
+      });
+      return res.json({ success: true, data: users.map((u: any) => ({ ...u.user, membershipId: u.id })) });
+    } catch (e) {
+      console.error('TENANT USERS ERROR', e);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } });
     }
   },
 );

@@ -11,6 +11,11 @@ export default function Staff() {
   const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '' });
   const [errors, setErrors] = useState<Record<string,string>>({});
   const [saving, setSaving] = useState(false);
+  const [eligibleUsers, setEligibleUsers] = useState<any[]>([]);
+
+  useEffect(() => {
+    api('/tenant-users').then(r => { if (r?.success) setEligibleUsers(r.data || []); });
+  }, []);
 
   useEffect(() => { load(); }, []);
   const load = async () => { setLoading(true); try { const r = await api('/staff'); if (r?.success) setItems(r.data||[]); } catch {} setLoading(false); };
@@ -27,7 +32,7 @@ export default function Staff() {
           <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
             <h3 className="font-semibold mb-3">New Staff</h3>
             <div className="grid md:grid-cols-3 gap-3 mb-3">
-              <input placeholder="User ID *" value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"/>
+              <select value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option value="">Select user</option>{eligibleUsers.map((u:any)=> <option key={u.id} value={u.id}>{u.name || u.email || u.id}</option>)}</select>
               <input placeholder="Job Title *" value={form.jobTitle} onChange={e=>setForm({...form,jobTitle:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"/>
               <input placeholder="Department" value={form.department} onChange={e=>setForm({...form,department:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"/>
               <input placeholder="Skills" value={form.skills} onChange={e=>setForm({...form,skills:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-3"/>

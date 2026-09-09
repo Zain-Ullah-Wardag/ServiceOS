@@ -18,7 +18,7 @@ export default function Customers() {
     try {
       const res = await api('/customers?limit=50');
       if (res.success) setCustomers(res.data || []);
-    } catch { /* silent */ }
+    } catch (e:any){ setFormErrors(prev => ({ ...prev, load: e.message || 'Load error' })); }
     setLoading(false);
   };
 
