@@ -1,102 +1,114 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import prisma from '../lib/prisma';
 
 describe('Phase 2B Admin Operations — Real', () => {
-  let authToken: string = '';
+  let token = '';
+  let testEmail = 'phase2b@test.local';
 
   beforeAll(async () => {
-    // Use existing integration setup (serviceos_test DB guard applied externally)
-    try {
-      // Clean previous test users
-      await prisma.user.deleteMany({ where: { email: { contains: '@test.local' } } });
-    } catch { /* ignore */ }
-
-    // Create real test user via auth endpoint
-    const reg = await request(app)
-      .post('/api/v1/auth/register')
-      .send({ email: 'test-admin@test.local', password: 'testpass123', name: 'Test Admin' });
-
-    const login = await request(app)
-      .post('/api/v1/auth/login')
-      .send({ email: 'test-admin@test.local', password: 'testpass123' });
-
-    authToken = login.body?.data?.token || login.body?.token || '';
+    try { await prisma.user.deleteMany({ where: { email: testEmail } }); } catch {}
+    // Register
+    const reg = await request(app).post('/api/v1/auth/register').send({ email: testEmail, password: 'testpass123', name: 'Phase 2B' });
+    expect(reg.status).toBe(201);
+    expect(reg.body.success).toBe(true);
+    // Login
+    const login = await request(app).post('/api/v1/auth/login').send({ email: testEmail, password: 'testpass123' });
+    expect(login.status).toBe(200);
+    expect(login.body.success).toBe(true);
+    expect(login.body.data?.token || login.body.token).toBeTruthy();
+    token = login.body.data?.token || login.body.token;
   });
 
-  it('customer create really persists', async () => {
-    const res = await request(app)
-      .post('/api/v1/customers')
-      .set('Authorization', `Bearer ${authToken}`)
-      .send({ name: 'Test Customer', phone: '03001234567', email: 'cust@test.local', notes: 'Walk-in' });
+  afterAll(async () => {
+    try { await prisma.user.deleteMany({ where: { email: testEmail } }); } catch {}
+  });
+
+  it('customer create/update/delete with DB persistence', async () => {
+    const create = await request(app).post('/api/v1/customers').set('Authorization', `Bearer ${token}`).send({ name: 'DB Test', phone: '0300', email: 'db@test.local', notes: 'test' });
+    expect(create.status).toBe(201);
+    expect(create.body.success).toBe(true);
+    const id = create.body.data.id;
+
+    // Verify DB
+    const dbRow = await prisma.customer.findUnique({ where: { id } });
+    expect(dbRow).not.toBeNull();
+    expect(dbRow?.name).toBe('DB Test');
+
+    const patch = await request(app).patch(`/api/v1/customers/${id}`).set('Authorization', `Bearer ${token}`).send({ notes: 'updated' });
+    expect(patch.status).toBe(200);
+    const dbPatched = await prisma.customer.findUnique({ where: { id } });
+    expect(dbPatched?.notes).toBe('updated');
+
+    const del = await request(app).delete(`/api/v1/customers/${id}`).set('Authorization', `Bearer ${token}`);
+    expect(del.status).toBe(200);
+  });
+
+  it('service create uses real endpoint', async () => {
+    const res = await request(app).post('/api/v1/services').set('Authorization', `Bearer ${token}`).send({ name: 'Test Service', price: 5000, duration: 30 });
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
-    expect(res.body.data.id).toBeDefined();
   });
 
-  it('measurement fields endpoint returns real config', async () => {
-    const res = await request(app)
-      .get('/api/v1/tailoring/measurement-fields')
-      .set('Authorization', `Bearer ${authToken}`);
+  it('measurement fields endpoint real', async () => {
+    const res = await request(app).get('/api/v1/tailoring/measurement-fields').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(Array.isArray(res.body.data)).toBe(true);
   });
 
-  it('service create really persists', async () => {
-    const res = await request(app)
-      .post('/api/v1/services')
-      .set('Authorization', `Bearer ${authToken}`)
-      .send({ name: 'Test Suit', price: 12000, duration: 60, description: 'Tailored' });
-    expect(res.status).toBe(201);
-    expect(res.body.success).toBe(true);
-  });
-
-  it('garment endpoint is tenant-scoped', async () => {
-    const res = await request(app)
-      .get('/api/v1/tailoring/garments')
-      .set('Authorization', `Bearer ${authToken}`);
+  it('garment endpoint tenant-scoped', async () => {
+    const res = await request(app).get('/api/v1/tailoring/garments').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   it('staff endpoint accessible', async () => {
-    const res = await request(app)
-      .get('/api/v1/staff')
-      .set('Authorization', `Bearer ${authToken}`);
+    const res = await request(app).get('/api/v1/staff').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   it('tailoring orders endpoint accessible', async () => {
-    const res = await request(app)
-      .get('/api/v1/tailoring/orders')
-      .set('Authorization', `Bearer ${authToken}`);
+    const res = await request(app).get('/api/v1/tailoring/orders').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
-  it('customer update and delete use real endpoints', async () => {
-    // Create
-    const createRes = await request(app)
-      .post('/api/v1/customers')
-      .set('Authorization', `Bearer ${authToken}`)
-      .send({ name: 'Update Me', phone: '0300', email: 'update@test.local' });
-    expect(createRes.status).toBe(201);
-    const id = createRes.body.data.id;
+  it('tailoring order POST with real relations', async () => {
+    // Create customer first
+    const c = await request(app).post('/api/v1/customers').set('Authorization', `Bearer ${token}`).send({ name: 'OrderTest', phone: '0300', email: 'order@test.local' });
+    expect(c.status).toBe(201);
+    const customerId = c.body.data.id;
 
-    // Update
-    const patch = await request(app)
-      .patch(`/api/v1/customers/${id}`)
-      .set('Authorization', `Bearer ${authToken}`)
-      .send({ notes: 'Updated' });
-    expect(patch.status).toBe(200);
+    // Create service
+    const s = await request(app).post('/api/v1/services').set('Authorization', `Bearer ${token}`).send({ name: 'S', price: 1000, duration: 30 });
+    expect(s.status).toBe(201);
+    const serviceId = s.body.data.id;
 
-    // Delete
-    const del = await request(app)
-      .delete(`/api/v1/customers/${id}`)
-      .set('Authorization', `Bearer ${authToken}`);
-    expect(del.status).toBe(200);
+    // Create order
+    const o = await request(app).post('/api/v1/orders').set('Authorization', `Bearer ${token}`).send({ customerId, items: [{ serviceId, quantity: 1, price: 1000 }] });
+    expect(o.status).toBe(201);
+    const orderId = o.body.data.id;
+
+    // Create tailoring order with delivery and priority
+    const tail = await request(app).post('/api/v1/tailoring/orders').set('Authorization', `Bearer ${token}`).send({
+      orderId,
+      customerId,
+      status: 'received',
+      priority: 'high',
+      deliveryDate: '2026-09-20',
+      notes: 'test',
+    });
+    expect(tail.status).toBe(201);
+    expect(tail.body.success).toBe(true);
+    expect(tail.body.data.id).toBeDefined();
+
+    // Verify DB
+    const dbOrder = await prisma.tailoringOrder.findUnique({ where: { id: tail.body.data.id } });
+    expect(dbOrder).not.toBeNull();
+    expect(dbOrder?.deliveryDate?.toISOString().startsWith('2026-09-20')).toBe(true);
+    expect(dbOrder?.priority).toBe('high');
   });
 });

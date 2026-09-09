@@ -11,6 +11,7 @@ export default function Staff() {
   const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '' });
   const [errors, setErrors] = useState<Record<string,string>>({});
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [eligibleUsers, setEligibleUsers] = useState<any[]>([]);
 
   useEffect(() => {
@@ -46,6 +47,7 @@ export default function Staff() {
           <tbody className="divide-y divide-slate-100">{items.map((s:any)=><tr key={s.id} className="hover:bg-slate-50"><td className="px-4 py-3">{s.user?.name||'-'}</td><td className="px-4 py-3">{s.jobTitle||'-'}</td><td className="px-4 py-3">{s.department||'-'}</td></tr>)}</tbody>
           </table>
         </div>
+        {loadError && <p className="text-sm text-red-600 mb-2">{loadError}</p>}
         <p className="text-xs text-slate-400 mt-3">Note: Edit/delete endpoints not yet implemented; only list and create are available.</p>
       </div>
     </div>
