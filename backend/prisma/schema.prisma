@@ -507,6 +507,7 @@ model Measurement {
   tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer           Customer?         @relation(fields: [customerId], references: [id], onDelete: SetNull)
   garment            Garment?          @relation(fields: [garmentId], references: [id], onDelete: SetNull)
+  tailoringOrders    TailoringOrder[]
   creator            User              @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   measurementField   MeasurementField? @relation(fields: [measurementFieldId], references: [id])
   measurementFieldId String?
@@ -560,6 +561,7 @@ model TailoringOrder {
   customerId   String    @map("customer_id")
   garmentId    String?   @map("garment_id")
   measurementId String? @map("measurement_id")
+  measurement  Measurement? @relation(fields: [measurementId], references: [id], onDelete: SetNull)
   staffId      String?   @map("staff_id")
   status       String    @default("received") // received, measurement, cutting, stitching, finishing, quality_check, ready, delivered, cancelled
   deliveryDate DateTime? @map("delivery_date")
