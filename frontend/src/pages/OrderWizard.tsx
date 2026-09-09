@@ -56,20 +56,12 @@ export default function OrderWizard() {
     if (selServices.length === 0) { setError('Select at least one service'); return; }
     setLoading(true); setError('');
     try {
-      const orderRes = await api('/orders', { method: 'POST', body: JSON.stringify({
+      const payload: any = {
         customerId: selCustomer,
         items: selServices.map((sid: string) => {
           const svc = services.find(s => s.id === sid);
           return { serviceId: sid, quantity: 1, price: Number(svc?.price || 0) };
         }),
-        priority: priority || 'normal',
-        notes: notes || undefined,
-      }) });
-      if (!orderRes?.success) throw new Error(orderRes?.error?.message || 'Order creation failed');
-      const orderId = orderRes.data.id;
-      const payload: any = {
-        orderId: orderId,
-        customerId: selCustomer,
         status: 'received',
         priority: priority || 'normal',
         notes: notes || undefined,
@@ -81,8 +73,7 @@ export default function OrderWizard() {
       const tailRes = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify(payload) });
       if (!tailRes?.success) throw new Error(tailRes?.error?.message || 'Tailoring order failed');
       setSuccess(true);
-      setTimeout(() => nav('/dashboard/orders'), 1200);
-    } catch (e: any) { setError(e.message || 'Create failed'); }
+      setTimeout(() => nav('/dashboard/orders'), 1200);    } catch (e: any) { setError(e.message || 'Create failed'); }
     setLoading(false);
   };
 
