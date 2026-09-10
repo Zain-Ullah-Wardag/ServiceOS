@@ -269,7 +269,7 @@ app.post(
   validateBody(customerCreateSchema),
   async (req, res) => {
     try {
-      const { name, phone, email, address, notes } = req.body;
+      const { name, phone, email, address, notes, measurementId } = req.body;
 
       const currentCustomers = await prisma.customer.count({
         where: {
@@ -597,11 +597,7 @@ app.post(
 ========================================================= */
 
 app.get(
-      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
-    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
-  },
-
-    '/api/v1/bookings',
+  '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.read'),
   async (req, res) => {
@@ -641,11 +637,7 @@ app.get(
 );
 
 app.post(
-      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
-    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
-  },
-
-    '/api/v1/bookings',
+  '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.create'),
   validateBody(bookingCreateSchema),
@@ -812,7 +804,7 @@ app.post(
   validateBody(orderCreateSchema),
   async (req, res) => {
     try {
-      const { customerId, items, priority, expectedDate, notes } = req.body;
+      const { customerId, items, priority, expectedDate, notes, measurementId } = req.body;
 
       const customer = await prisma.customer.findFirst({
         where: {
@@ -994,7 +986,7 @@ app.post(
   validateBody(orderStatusUpdateSchema),
   async (req, res) => {
     try {
-      const { status, notes } = req.body;
+      const { status, notes, measurementId } = req.body;
 
       const existing = await prisma.order.findFirst({
         where: {
@@ -2031,7 +2023,7 @@ app.post(
         items,
       } = req.body;
 
-      const result = await prisma.$transaction(async (tx) => {
+      const result = await prisma.$transaction(async (tx: any) => {
         let resolvedOrderId = orderId;
 
         if (!resolvedOrderId) {
@@ -2112,6 +2104,7 @@ app.post(
   },
 );
 
+app.patch(
   '/api/v1/tailoring/orders/:id/status',
   authMiddleware,
   requirePermission('tailoring.update'),
@@ -2305,6 +2298,7 @@ app.post(
         serviceId,
         notes,
         expectedDate,
+        measurementId,
       } = req.body;
 
       const tenant = await prisma.tenant.findUnique({
