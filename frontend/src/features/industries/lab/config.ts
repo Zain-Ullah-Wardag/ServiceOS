@@ -1,0 +1,1 @@
+export const labConfig = { name: 'Laboratory', nav: ['Dashboard','Patients','Tests','Test Orders','Samples','Technicians','Results','Reports','Invoices','Payments','Analytics','AI Assistant','Settings'] };
