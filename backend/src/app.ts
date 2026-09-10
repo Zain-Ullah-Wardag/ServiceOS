@@ -300,7 +300,6 @@ app.post(
           phone,
           email: email || null,
           address: address || null,
-          measurementId: measurementId || null,
           notes: notes || null,
           status: 'active',
         },
@@ -597,10 +596,9 @@ app.post(
 ========================================================= */
 
 app.get(
-      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
-    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
-  },
-
+  //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+  //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  // },
     '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.read'),
@@ -641,10 +639,9 @@ app.get(
 );
 
 app.post(
-      return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
-    } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
-  },
-
+  //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+  //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  // },
     '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.create'),
@@ -659,7 +656,6 @@ app.post(
         startTime,
         endTime,
         status,
-        measurementId,
         notes,
       } = req.body;
 
@@ -726,7 +722,6 @@ app.post(
           startTime: new Date(startTime || bookingDate),
           endTime: new Date(endTime || bookingDate),
           status: status || 'pending',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -890,7 +885,6 @@ app.post(
           priority: priority || 'normal',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           status: 'received',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -1030,7 +1024,6 @@ app.post(
           orderId: order.id,
           status,
           changedBy: req.user?.id || 'system',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -2043,20 +2036,40 @@ app.post(
               if (!svc) throw new Error('Invalid service: ' + it.serviceId);
             }
           }
+          const number =
+            'ORD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
           const order = await tx.order.create({
             data: {
               tenantId: req.tenantId!,
               customerId,
-              status: 'pending',
+              orderNumber: number,
+              priority: priority || 'normal',
+              expectedDate: deliveryDate ? new Date(deliveryDate) : null,
+              status: status || 'received',
+              notes: notes || null,
+
               items: {
-                create: items.map((it: any) => ({
-                  serviceId: it.serviceId,
-                  quantity: it.quantity || 1,
-                  price: it.price || 0,
-                })),
+                create: items.map((it: any) => {
+                  const quantity = Number(it.quantity ?? 1);
+                  const unitPrice = Number(it.price ?? it.unitPrice ?? 0);
+
+                  return {
+                    quantity,
+                    unitPrice,
+                    total: unitPrice * quantity,
+                    service: {
+                      connect: { id: it.serviceId },
+                    },
+                    tenant: {
+                      connect: { id: req.tenantId! },
+                    },
+                  };
+                }),
               },
             },
           });
+
           resolvedOrderId = order.id;
         } else {
           const order = await tx.order.findFirst({ where: { id: orderId, tenantId: req.tenantId! } });
@@ -2111,7 +2124,7 @@ app.post(
     }
   },
 );
-
+app.patch(
   '/api/v1/tailoring/orders/:id/status',
   authMiddleware,
   requirePermission('tailoring.update'),
@@ -2425,7 +2438,7 @@ app.post(
           orderNumber: number,
           status: 'received',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
-          measurementId: measurementId || null,
+
           notes: notes || null,
         },
       });

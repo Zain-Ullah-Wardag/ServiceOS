@@ -51,13 +51,89 @@ describe('Phase 2B Admin Operations Real Integration', () => {
       update: {},
       create: { tenantId: tenantBId, name: 'Owner', description: 'Integration test owner' },
     });
+        // Connect each test user to its tenant and Owner role
+    for (const { userId, roleId, tenantId } of [
+      {
+        userId: userA.id,
+        roleId: roleA.id,
+        tenantId: tenantAId,
+      },
+      {
+        userId: userB.id,
+        roleId: roleB.id,
+        tenantId: tenantBId,
+      },
+    ]) {
+      const existingMembership = await prisma.tenantUser.findFirst({
+        where: {
+          tenantId,
+          userId,
+        },
+      });
 
-    for (const { userId, roleId, tenantId } of [{ userId: userA.id, roleId: roleA.id, tenantId: tenantAId }, { userId: userB.id, roleId: roleB.id, tenantId: tenantBId }]) {
-      const existing = await prisma.tenantUser.findFirst({ where: { tenantId, userId } });
-      if (existing) {
-        await prisma.tenantUser.update({ where: { id: existing.id }, data: { roleId, status: 'active' } });
+      if (existingMembership) {
+        await prisma.tenantUser.update({
+          where: {
+            id: existingMembership.id,
+          },
+          data: {
+            roleId,
+            status: 'active',
+          },
+        });
       } else {
-        await prisma.tenantUser.create({ data: { tenantId, userId, roleId, status: 'active' } });
+        await prisma.tenantUser.create({
+          data: {
+            tenantId,
+            userId,
+            roleId,
+            status: 'active',
+          },
+        });
+      }
+    }
+    const requiredPermissions = [
+      'customers.read',
+      'customers.create',
+      'customers.update',
+      'customers.delete',
+
+      'services.read',
+      'services.create',
+
+      'tailoring.read',
+      'tailoring.create',
+      'tailoring.update',
+    ];
+
+    for (const role of [roleA, roleB]) {
+      for (const permissionName of requiredPermissions) {
+        const permission = await prisma.permission.findUnique({
+          where: { name: permissionName },
+        });
+
+        if (!permission) {
+          throw new Error(
+            `Required permission "${permissionName}" is missing from serviceos_test.`,
+          );
+        }
+
+        const existingRolePermission =
+          await prisma.rolePermission.findFirst({
+            where: {
+              roleId: role.id,
+              permissionId: permission.id,
+            },
+          });
+
+        if (!existingRolePermission) {
+          await prisma.rolePermission.create({
+            data: {
+              roleId: role.id,
+              permissionId: permission.id,
+            },
+          });
+        }
       }
     }
 
@@ -117,7 +193,7 @@ describe('Phase 2B Admin Operations Real Integration', () => {
     expect(svc).not.toBeNull();
     expect(svc?.tenantId).toBe(tenantAId);
     expect(svc?.name).toBe('DBService');
-    expect(svc?.price).toBe(1234);
+    expect(svc?.price.toNumber()).toBe(1234);
   });
 
   it('cross-tenant customer tailoring order rejected', async () => {
