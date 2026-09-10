@@ -11,6 +11,8 @@ export default function Staff() {
   const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '' });
   const [errors, setErrors] = useState<Record<string,string>>({});
   const [saving, setSaving] = useState(false);
+  const [editId, setEditId] = useState<string|null>(null);
+  const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '', status: 'active' });
   const [loadError, setLoadError] = useState('');
   const [eligibleUsers, setEligibleUsers] = useState<any[]>([]);
 

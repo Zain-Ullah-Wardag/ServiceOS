@@ -599,7 +599,36 @@ app.get(
   //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
   //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
   // },
-    '/api/v1/bookings',
+    '/api/v1/services/:id',
+  authMiddleware,
+  requirePermission('services.update'),
+  validateBody(z.object({ name: z.string().optional(), description: z.string().optional(), price: z.number().optional(), duration: z.number().optional(), status: z.string().optional() })),
+  async (req, res) => {
+    try {
+      const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
+      const updated = await prisma.service.update({ where: { id: req.params.id }, data: { ...req.body } });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update service' } });
+    }
+  },
+
+  '/api/v1/services/:id',
+  authMiddleware,
+  requirePermission('services.delete'),
+  async (req, res) => {
+    try {
+      const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
+      await prisma.service.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, data: null });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete service' } });
+    }
+  },
+
+  '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.read'),
   async (req, res) => {
@@ -642,7 +671,36 @@ app.post(
   //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
   //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
   // },
-    '/api/v1/bookings',
+    '/api/v1/services/:id',
+  authMiddleware,
+  requirePermission('services.update'),
+  validateBody(z.object({ name: z.string().optional(), description: z.string().optional(), price: z.number().optional(), duration: z.number().optional(), status: z.string().optional() })),
+  async (req, res) => {
+    try {
+      const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
+      const updated = await prisma.service.update({ where: { id: req.params.id }, data: { ...req.body } });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update service' } });
+    }
+  },
+
+  '/api/v1/services/:id',
+  authMiddleware,
+  requirePermission('services.delete'),
+  async (req, res) => {
+    try {
+      const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
+      await prisma.service.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, data: null });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete service' } });
+    }
+  },
+
+  '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.create'),
   validateBody(bookingCreateSchema),
@@ -1215,6 +1273,34 @@ app.get(
 ========================================================= */
 
 app.get(
+  '/api/v1/staff/:id',
+  authMiddleware,
+  requirePermission('staff.update'),
+  validateBody(z.object({ jobTitle: z.string().optional(), department: z.string().optional(), skills: z.string().optional(), status: z.string().optional() })),
+  async (req, res) => {
+    try {
+      const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
+      const updated = await prisma.staff.update({ where: { id: req.params.id }, data: { ...req.body } });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update staff' } });
+    }
+  },
+  '/api/v1/staff/:id',
+  authMiddleware,
+  requirePermission('staff.delete'),
+  async (req, res) => {
+    try {
+      const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
+      await prisma.staff.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, data: null });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete staff' } });
+    }
+  },
+
   '/api/v1/invoices',
   authMiddleware,
   requirePermission('invoices.read'),
@@ -1254,6 +1340,34 @@ app.get(
 );
 
 app.post(
+  '/api/v1/staff/:id',
+  authMiddleware,
+  requirePermission('staff.update'),
+  validateBody(z.object({ jobTitle: z.string().optional(), department: z.string().optional(), skills: z.string().optional(), status: z.string().optional() })),
+  async (req, res) => {
+    try {
+      const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
+      const updated = await prisma.staff.update({ where: { id: req.params.id }, data: { ...req.body } });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update staff' } });
+    }
+  },
+  '/api/v1/staff/:id',
+  authMiddleware,
+  requirePermission('staff.delete'),
+  async (req, res) => {
+    try {
+      const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
+      await prisma.staff.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, data: null });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete staff' } });
+    }
+  },
+
   '/api/v1/invoices',
   authMiddleware,
   requirePermission('invoices.create'),
@@ -1900,6 +2014,34 @@ app.post(
 );
 
 app.patch(
+  '/api/v1/tailoring/garments/:id',
+  authMiddleware,
+  requirePermission('tailoring.update'),
+  validateBody(z.object({ name: z.string().optional(), category: z.string().optional(), description: z.string().optional(), customerId: z.string().optional(), status: z.string().optional() })),
+  async (req, res) => {
+    try {
+      const existing = await prisma.garment.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Garment not found' } });
+      const updated = await prisma.garment.update({ where: { id: req.params.id }, data: { ...req.body } });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update garment' } });
+    }
+  },
+  '/api/v1/tailoring/garments/:id',
+  authMiddleware,
+  requirePermission('tailoring.delete'),
+  async (req, res) => {
+    try {
+      const existing = await prisma.garment.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Garment not found' } });
+      await prisma.garment.delete({ where: { id: req.params.id } });
+      return res.json({ success: true, data: null });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete garment' } });
+    }
+  },
+
   '/api/v1/tailoring/garments/:id/status',
   authMiddleware,
   requirePermission('tailoring.update'),

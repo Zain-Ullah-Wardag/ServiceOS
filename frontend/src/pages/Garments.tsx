@@ -7,6 +7,7 @@ export default function Garments() {
   const nav = useNavigate();
   const [items, setItems] = useState<any[]>([]);
   const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string|null>(null);
   const [form, setForm] = useState({ customerId: '', name: '', category: '', description: '', status: 'pending' });
 
   const load = async () => {
@@ -16,7 +17,9 @@ export default function Garments() {
 
   const handleSave = async () => {
     try {
-      await api('/tailoring/garments', { method: 'POST', body: JSON.stringify(form) });
+      const url = editId ? `/tailoring/garments/${editId}` : '/tailoring/garments';
+      const method = editId ? 'PATCH' : 'POST';
+      await api(url, { method, body: JSON.stringify(form) });
       setShowForm(false); setForm({ customerId: '', name: '', category: '', description: '', status: 'pending' });
       load();
     } catch (e: any) { alert(e.message || 'Error'); }

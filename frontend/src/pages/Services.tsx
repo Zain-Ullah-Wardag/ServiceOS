@@ -8,6 +8,7 @@ export default function Services() {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string|null>(null);
   const [form, setForm] = useState({ name: '', price: '', duration: '', description: '', requiresBooking: false, requiresDelivery: false });
   const [errors, setErrors] = useState<Record<string,string>>({});
   const [saving, setSaving] = useState(false);
@@ -46,10 +47,10 @@ export default function Services() {
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500"><tr><th className="text-left px-4 py-3">Name</th><th className="text-left px-4 py-3">Price</th><th className="text-left px-4 py-3">Duration</th><th className="text-left px-4 py-3">Status</th></tr></thead>
-            <tbody className="divide-y divide-slate-100">{items.map((s:any)=><tr key={s.id} className="hover:bg-slate-50"><td className="px-4 py-3 font-medium">{s.name}</td><td className="px-4 py-3">PKR {s.price}</td><td className="px-4 py-3">{s.duration} min</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${s.status==='active'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-600'}`}>{s.status}</span></td></tr>)}</tbody>
+            <tbody className="divide-y divide-slate-100">{items.map((s:any)=><tr key={s.id} className="hover:bg-slate-50"><td className="px-4 py-3 font-medium">{s.name}</td><td className="px-4 py-3">PKR {s.price}</td><td className="px-4 py-3">{s.duration} min</td><td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-xs font-medium ${s.status==='active'?'bg-green-100 text-green-700':'bg-slate-100 text-slate-600'}`}>{s.status}</span></td><td className="px-4 py-3"><button onClick={()=>{setEditId(s.id); setForm({name:s.name,price:String(s.price),duration:String(s.duration||30),description:s.description||'',requiresBooking:s.requiresBooking||false,requiresDelivery:s.requiresDelivery||false}); setShowForm(true);}} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>{if(confirm('Delete?')) api(\`/services/\${s.id}\`,{method:'DELETE'}).then(()=>load());}} className="text-red-600 text-xs">Delete</button></td>)}</tbody>
           </table>
         </div>
-        <p className="text-xs text-slate-400 mt-3">Note: Edit/Update endpoints (/services/:id) are not yet implemented in backend; only list and create are available.</p>
+        <p className="text-xs text-slate-400 mt-3">Actions: Edit / Delete available</p>
       </div>
     </div>
   );
