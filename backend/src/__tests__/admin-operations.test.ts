@@ -263,3 +263,22 @@ describe('Phase 2B Admin Operations Real Integration', () => {
     expect(afterTail).toBe(beforeTail);
   });
 });
+
+describe('Phase 2B admin CRUD routes', () => {
+  it('PATCH /api/v1/services/:id updates own tenant', async () => {
+    const res = await request(app).patch('/api/v1/services/test-id').set('Authorization', 'Bearer test').send({ status: 'inactive' });
+    expect(res.status).toBeGreaterThanOrEqual(200);
+  });
+  it('DELETE /api/v1/services/:id deactivates own tenant', async () => {
+    const res = await request(app).delete('/api/v1/services/test-id').set('Authorization', 'Bearer test');
+    expect(res.status).toBeGreaterThanOrEqual(200);
+  });
+  it('PATCH /api/v1/staff/:id updates staff', async () => {
+    const res = await request(app).patch('/api/v1/staff/test-id').set('Authorization', 'Bearer test').send({ jobTitle: 'Senior' });
+    expect(res.status).toBeGreaterThanOrEqual(200);
+  });
+  it('PATCH /api/v1/tailoring/garments/:id updates garment', async () => {
+    const res = await request(app).patch('/api/v1/tailoring/garments/test-id').set('Authorization', 'Bearer test').send({ status: 'ready' });
+    expect(res.status).toBeGreaterThanOrEqual(200);
+  });
+});

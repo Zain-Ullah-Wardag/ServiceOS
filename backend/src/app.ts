@@ -2827,23 +2827,17 @@ async function checkSubscriptionLimit(
   };
 }
 
-/* =========================================================
-   ERROR HANDLER
-========================================================= */
-
-app.use(errorHandler);
-
-export default app;
   app.patch(
     '/api/v1/services/:id',
     authMiddleware,
     requirePermission('services.update'),
-    validateBody(z.object({ name: z.string().optional(), description: z.string().optional(), price: z.number().optional(), duration: z.number().optional(), status: z.string().optional() })),
+    validateBody(z.object({ name: z.string().optional(), description: z.string().optional(), price: z.number().optional(), duration: z.number().optional(), categoryId: z.string().optional(), requiresBooking: z.boolean().optional(), requiresDelivery: z.boolean().optional(), status: z.string().optional() })),
     async (req, res) => {
       try {
         const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
         const updated = await prisma.service.update({ where: { id: req.params.id }, data: { ...req.body } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'SERVICE_UPDATED', entity: 'Service', entityId: updated.id });
         return res.json({ success: true, data: updated });
       } catch (e) {
         return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update service' } });
@@ -2858,10 +2852,11 @@ export default app;
       try {
         const existing = await prisma.service.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Service not found' } });
-        await prisma.service.delete({ where: { id: req.params.id } });
+        await prisma.service.update({ where: { id: req.params.id }, data: { status: 'inactive' } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'SERVICE_DEACTIVATED', entity: 'Service', entityId: req.params.id });
         return res.json({ success: true, data: null });
       } catch (e) {
-        return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete service' } });
+        return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to deactivate service' } });
       }
     },
   ),
@@ -2875,6 +2870,7 @@ export default app;
         const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
         const updated = await prisma.staff.update({ where: { id: req.params.id }, data: { ...req.body } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'STAFF_UPDATED', entity: 'Staff', entityId: updated.id });
         return res.json({ success: true, data: updated });
       } catch (e) {
         return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update staff' } });
@@ -2889,10 +2885,11 @@ export default app;
       try {
         const existing = await prisma.staff.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Staff not found' } });
-        await prisma.staff.delete({ where: { id: req.params.id } });
+        await prisma.staff.update({ where: { id: req.params.id }, data: { status: 'inactive' } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'STAFF_DEACTIVATED', entity: 'Staff', entityId: req.params.id });
         return res.json({ success: true, data: null });
       } catch (e) {
-        return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete staff' } });
+        return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to deactivate staff' } });
       }
     },
   ),
@@ -2905,7 +2902,12 @@ export default app;
       try {
         const existing = await prisma.garment.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Garment not found' } });
-        const updated = await prisma.garment.update({ where: { id: req.params.id }, data: { ...req.body } });
+        if (req.body.customerId) {
+          const customer = await prisma.customer.findFirst({ where: { id: req.body.customerId, tenantId: req.tenantId! } });
+          if (!customer) return res.status(400).json({ success: false, error: { code: 'INVALID_CUSTOMER', message: 'Customer does not belong to this tenant' } });
+        }
+        const updated = await prisma.garment.update({ where: { id: req.params.id }, data: { ...req.body, customerId: req.body.customerId || existing.customerId } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'GARMENT_UPDATED', entity: 'Garment', entityId: updated.id });
         return res.json({ success: true, data: updated });
       } catch (e) {
         return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update garment' } });
@@ -2920,10 +2922,20 @@ export default app;
       try {
         const existing = await prisma.garment.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
         if (!existing) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Garment not found' } });
+        const measurementsCount = await prisma.measurement.count({ where: { garmentId: req.params.id } });
+        if (measurementsCount > 0) return res.status(409).json({ success: false, error: { code: 'REFERENCED', message: 'Garment has measurements; cannot delete' } });
         await prisma.garment.delete({ where: { id: req.params.id } });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'GARMENT_DELETED', entity: 'Garment', entityId: req.params.id });
         return res.json({ success: true, data: null });
       } catch (e) {
         return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to delete garment' } });
       }
     },
   ),
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use(errorHandler);
+
+export default app;
