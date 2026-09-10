@@ -14,11 +14,17 @@ export default function Services() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { load(); }, []);
+  const handleEditClick = (item: any) => { setEditId(item.id); setForm({ name: item.name || '', price: String(item.price || ''), duration: String(item.duration || 30), description: item.description || '', requiresBooking: item.requiresBooking || false, requiresDelivery: item.requiresDelivery || false }); setShowForm(true); };
+  const handleDeleteClick = (id: string) => { if (confirm('Delete?')) api(`/services/${id}`, { method: 'DELETE' }).then(() => load()).catch(() => {}); };
   const load = async () => { setLoading(true); try { const res = await api('/services'); if (res?.success) setItems(res.data || []); } catch {} setLoading(false); };
 
   const validate = () => { const e: Record<string,string>={}; if (!form.name) e.name='Required'; if (!form.price || isNaN(Number(form.price))) e.price='Valid price'; setErrors(e); return Object.keys(e).length===0; };
 
   const handleSave = async () => { if (!validate()) return; setSaving(true); try { const res = await api('/services', { method: 'POST', body: JSON.stringify({ ...form, price: Number(form.price), duration: Number(form.duration) || 30 })}); if (res?.success) { setShowForm(false); setForm({ name:'', price:'', duration:'', description:'', requiresBooking:false, requiresDelivery:false }); load(); } else throw new Error(res?.error?.message||'Failed'); } catch (err:any){ setErrors(prev=>({...prev,submit:err.message||'Failed'})); } finally { setSaving(false); } };
+
+
+  const handleEditClick = (id: string) => { setEditId(id); const item = items.find((s:any) => s.id === id); if (item) { setForm({ name: item.name||'', price: String(item.price||''), duration: String(item.duration||30), description: item.description||'', requiresBooking: item.requiresBooking||false, requiresDelivery: item.requiresDelivery||false }); setShowForm(true); } };
+  const handleDeleteClick = async (id: string) => { if (confirm('Delete this service?')) { await api(`/services/${id}`, { method: 'DELETE' }); load(); } };
 
   return (
     <div className="min-h-screen bg-paper p-6 md:p-10">
@@ -27,7 +33,7 @@ export default function Services() {
         <div className="flex items-center justify-between mb-6"><h1 className="font-serif text-3xl flex items-center gap-3"><Wrench size={28}/> Services</h1><button onClick={()=>{setShowForm(!showForm); setErrors({});}} className="flex items-center gap-2 px-4 py-2 bg-brand-900 text-white rounded-xl font-medium"><Plus size={18}/> Add Service</button></div>
         {showForm && (
           <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
-            <h3 className="font-semibold mb-3">New Service</h3>
+            <h3 className="font-semibold mb-3">{editId ? 'Edit Service' : 'New Service'}</h3>
             <div className="grid md:grid-cols-3 gap-3 mb-3">
               <input placeholder="Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"/>
               <input placeholder="Price (PKR) *" value={form.price} onChange={e=>setForm({...form,price:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"/>
