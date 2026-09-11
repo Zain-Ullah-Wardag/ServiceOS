@@ -516,6 +516,7 @@ model Measurement {
   creator            User              @relation(fields: [createdBy], references: [id], onDelete: Cascade)
   measurementField   MeasurementField? @relation(fields: [measurementFieldId], references: [id])
   measurementFieldId String?
+  template            MeasurementTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   @@map("measurements")
 }
