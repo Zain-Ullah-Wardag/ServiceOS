@@ -891,27 +891,55 @@ function CustomersModule({
   error,
   refresh,
 }: any) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: '', phone: '', email: '', address: '', notes: '', status: 'active' });
+  const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string,string>>({});
+
+  const resetForm = () => setForm({ name: '', phone: '', email: '', address: '', notes: '', status: 'active' });
+
+  const handleSave = async () => {
+    setFormErrors({});
+    setSaving(true);
+    try {
+      const url = editId ? `/customers/${editId}` : '/customers';
+      const method = editId ? 'PATCH' : 'POST';
+      const res = await api(url, { method, body: JSON.stringify({ ...form }) });
+      if (!res?.success) throw new Error(res?.error?.message || 'Failed');
+      setShowForm(false); setEditId(null); resetForm(); await refresh();
+    } catch (e: any) { setFormErrors({ submit: e.message || 'Failed' }); }
+    finally { setSaving(false); }
+  };
+
+  const handleEdit = (r: any) => { setEditId(r.id); setForm({ name: r.name || '', phone: r.phone || '', email: r.email || '', address: r.address || '', notes: r.notes || '', status: r.status || 'active' }); setShowForm(true); };
+  const handleDelete = async (id: string) => { if (confirm('Delete this customer?')) { await api(`/customers/${id}`, { method: 'DELETE' }); await refresh(); } };
+
   return (
-    <ModuleWrapper
-      title="Customers"
-      description="Customers registered under this tenant."
-      loading={loading}
-      error={error}
-      refresh={refresh}
-      count={rows.length}
-    >
+    <ModuleWrapper title="Customers" description="Customers registered under this tenant." loading={loading} error={error} refresh={refresh} count={rows.length}>
+      <div className="mb-4"><button onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Customer</button></div>
+      {showForm && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Customer' : 'New Customer'}</h3>
+          <div className="grid md:grid-cols-2 gap-3 mb-3">
+            <input placeholder="Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Address" value={form.address} onChange={e=>setForm({...form,address:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Notes" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-2" />
+          </div>
+          {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
+          <div className="flex gap-2"><button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium">{saving ? 'Saving...' : editId ? 'Update' : 'Save'}</button><button onClick={()=>{setShowForm(false); setEditId(null); resetForm();}} className="px-4 py-2 bg-slate-100 rounded-lg text-sm font-medium">Cancel</button></div>
+        </div>
+      )}
       <DataTable
-        headers={[
-          'Name',
-          'Phone',
-          'Email',
-          'Status',
-        ]}
+        headers={['Name','Phone','Email','Status','Actions']}
         rows={rows.map((row: any) => [
           row.name,
           row.phone || '-',
           row.email || '-',
           formatStatus(row.status),
+          <><button onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Delete</button></>,
         ])}
       />
     </ModuleWrapper>
@@ -929,32 +957,53 @@ function ServicesModule({
   refresh,
   currency,
 }: any) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: '', description: '', price: '', duration: '', requiresBooking: false, requiresDelivery: false, status: 'active' });
+  const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string,string>>({});
+  const resetForm = () => setForm({ name: '', description: '', price: '', duration: '', requiresBooking: false, requiresDelivery: false, status: 'active' });
+  const handleSave = async () => {
+    setFormErrors({}); setSaving(true);
+    try {
+      const url = editId ? `/services/${editId}` : '/services';
+      const method = editId ? 'PATCH' : 'POST';
+      const res = await api(url, { method, body: JSON.stringify({ ...form, price: Number(form.price), duration: Number(form.duration) || 30 }) });
+      if (!res?.success) throw new Error(res?.error?.message || 'Failed');
+      setShowForm(false); setEditId(null); resetForm(); await refresh();
+    } catch (e: any) { setFormErrors({ submit: e.message || 'Failed' }); }
+    finally { setSaving(false); }
+  };
+  const handleEdit = (r: any) => { setEditId(r.id); setForm({ name: r.name || '', description: r.description || '', price: String(r.price || ''), duration: String(r.duration || ''), requiresBooking: r.requiresBooking || false, requiresDelivery: r.requiresDelivery || false, status: r.status || 'active' }); setShowForm(true); };
+  const handleDelete = async (id: string) => { if (confirm('Deactivate this service?')) { await api(`/services/${id}`, { method: 'DELETE' }); await refresh(); } };
   return (
-    <ModuleWrapper
-      title="Services"
-      description="Services currently offered by your business."
-      loading={loading}
-      error={error}
-      refresh={refresh}
-      count={rows.length}
-    >
+    <ModuleWrapper title="Services" description="Services currently offered by your business." loading={loading} error={error} refresh={refresh} count={rows.length}>
+      <div className="mb-4"><button onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Service</button></div>
+      {showForm && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Service' : 'New Service'}</h3>
+          <div className="grid md:grid-cols-3 gap-3 mb-3">
+            <input placeholder="Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Price (PKR) *" value={form.price} onChange={e=>setForm({...form,price:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Duration (min)" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Description" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-3" />
+          </div>
+          <div className="flex gap-3 mb-3">
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.requiresBooking} onChange={e=>setForm({...form,requiresBooking:e.target.checked})} /> Booking required</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.requiresDelivery} onChange={e=>setForm({...form,requiresDelivery:e.target.checked})} /> Delivery required</label>
+          </div>
+          {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
+          <div className="flex gap-2"><button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-900 text-white rounded-lg font-medium text-sm">{saving ? 'Saving...' : editId ? 'Update Service' : 'Save Service'}</button><button onClick={()=>{setShowForm(false); setEditId(null); resetForm();}} className="px-4 py-2 bg-slate-100 rounded-lg font-medium text-sm">Cancel</button></div>
+        </div>
+      )}
       <DataTable
-        headers={[
-          'Service',
-          'Price',
-          'Duration',
-          'Status',
-        ]}
+        headers={['Service','Price','Duration','Status','Actions']}
         rows={rows.map((row: any) => [
           row.name,
-          formatMoney(
-            row.price,
-            currency,
-          ),
-          row.duration
-            ? `${row.duration} min`
-            : '-',
+          formatMoney(row.price, currency),
+          row.duration ? `${row.duration} min` : '-',
           formatStatus(row.status),
+          <><button onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Deactivate</button></>,
         ])}
       />
     </ModuleWrapper>
@@ -1251,27 +1300,52 @@ function GarmentsModule({
   error,
   refresh,
 }: any) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState({ customerId: '', name: '', category: '', description: '', status: 'pending' });
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string,string>>({});
+  useEffect(() => { api('/customers').then(r => { if (r?.success) setCustomers(r.data || []); }); }, []);
+  const resetForm = () => setForm({ customerId: '', name: '', category: '', description: '', status: 'pending' });
+  const handleSave = async () => {
+    setFormErrors({}); setSaving(true);
+    try {
+      const url = editId ? `/tailoring/garments/${editId}` : '/tailoring/garments';
+      const method = editId ? 'PATCH' : 'POST';
+      const res = await api(url, { method, body: JSON.stringify({ ...form, customerId: form.customerId || undefined }) });
+      if (!res?.success) throw new Error(res?.error?.message || (res?.error?.code === 'REFERENCED' ? res.error.message : 'Failed'));
+      setShowForm(false); setEditId(null); resetForm(); await refresh();
+    } catch (e: any) { setFormErrors({ submit: e.message || 'Failed' }); }
+    finally { setSaving(false); }
+  };
+  const handleEdit = (r: any) => { setEditId(r.id); setForm({ customerId: r.customerId || '', name: r.name || '', category: r.category || '', description: r.description || '', status: r.status || 'pending' }); setShowForm(true); };
+  const handleDelete = async (id: string) => { if (confirm('Delete this garment?')) { try { await api(`/tailoring/garments/${id}`, { method: 'DELETE' }); await refresh(); } catch (e: any) { if (e.response?.status === 409 || e.message?.includes('REFERENCED')) alert('Garment is referenced and cannot be deleted.'); else alert('Delete failed.'); } } };
   return (
-    <ModuleWrapper
-      title="Garments"
-      description="Tailoring garments and their current status."
-      loading={loading}
-      error={error}
-      refresh={refresh}
-      count={rows.length}
-    >
+    <ModuleWrapper title="Garments" description="Tailoring garments and their current status." loading={loading} error={error} refresh={refresh} count={rows.length}>
+      <div className="mb-4"><button onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Garment</button></div>
+      {showForm && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Garment' : 'New Garment'}</h3>
+          <div className="grid md:grid-cols-3 gap-3 mb-3">
+            <select value={form.customerId} onChange={e=>setForm({...form,customerId:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option value="">Select customer</option>{customers.map((c:any)=><option key={c.id} value={c.id}>{c.name||c.phone||c.id}</option>)}</select>
+            <input placeholder="Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Description" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-3" />
+          </div>
+          <div className="mb-3"><label className="text-sm">Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option>pending</option><option>measured</option><option>cutting</option><option>stitching</option><option>finishing</option><option>quality_check</option><option>ready</option><option>delivered</option></select></div>
+          {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
+          <div className="flex gap-2"><button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-900 text-white rounded-lg font-medium text-sm">{saving ? 'Saving...' : editId ? 'Update Garment' : 'Save Garment'}</button><button onClick={()=>{setShowForm(false); setEditId(null); resetForm();}} className="px-4 py-2 bg-slate-100 rounded-lg font-medium text-sm">Cancel</button></div>
+        </div>
+      )}
       <DataTable
-        headers={[
-          'Garment',
-          'Customer',
-          'Category',
-          'Status',
-        ]}
+        headers={['Garment','Customer','Category','Status','Actions']}
         rows={rows.map((row: any) => [
           row.name,
           row.customer?.name || '-',
           row.category || '-',
           formatStatus(row.status),
+          <><button onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Delete</button></>,
         ])}
       />
     </ModuleWrapper>
@@ -1334,27 +1408,52 @@ function StaffModule({
   error,
   refresh,
 }: any) {
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '', status: 'active' });
+  const [users, setUsers] = useState<any[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string,string>>({});
+  useEffect(() => { api('/tenant-users').then(r => { if (r?.success) setUsers(r.data || []); }); }, []);
+  const resetForm = () => setForm({ userId: '', jobTitle: '', department: '', skills: '', status: 'active' });
+  const handleSave = async () => {
+    setFormErrors({}); setSaving(true);
+    try {
+      if (editId) {
+        await api(`/staff/${editId}`, { method: 'PATCH', body: JSON.stringify({ jobTitle: form.jobTitle, department: form.department, skills: form.skills || undefined, status: form.status }) });
+      } else {
+        await api('/staff', { method: 'POST', body: JSON.stringify({ ...form, skills: form.skills || undefined }) });
+      }
+      setShowForm(false); setEditId(null); resetForm(); await refresh();
+    } catch (e: any) { setFormErrors({ submit: e.message || 'Failed' }); }
+    finally { setSaving(false); }
+  };
+  const handleEdit = (r: any) => { setEditId(r.id); setForm({ userId: r.user?.id || r.userId || '', jobTitle: r.jobTitle || '', department: r.department || '', skills: r.skills || '', status: r.status || 'active' }); setShowForm(true); };
+  const handleDelete = async (id: string) => { if (confirm('Deactivate this staff?')) { await api(`/staff/${id}`, { method: 'DELETE' }); await refresh(); } };
   return (
-    <ModuleWrapper
-      title="Staff"
-      description="Business staff and assigned roles."
-      loading={loading}
-      error={error}
-      refresh={refresh}
-      count={rows.length}
-    >
+    <ModuleWrapper title="Staff" description="Business staff and assigned roles." loading={loading} error={error} refresh={refresh} count={rows.length}>
+      <div className="mb-4"><button onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Staff</button></div>
+      {showForm && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Staff' : 'Add Staff'}</h3>
+          <div className="grid md:grid-cols-3 gap-3 mb-3">
+            <select disabled={!!editId} value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} className={`w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 ${editId?'opacity-60':''}`}><option value="">Select user</option>{users.map((u:any)=><option key={u.id} value={u.id}>{u.name||u.email||u.id}</option>)}</select>
+            <input placeholder="Job Title *" value={form.jobTitle} onChange={e=>setForm({...form,jobTitle:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Department" value={form.department} onChange={e=>setForm({...form,department:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <input placeholder="Skills" value={form.skills} onChange={e=>setForm({...form,skills:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-3" />
+          </div>
+          {formErrors.submit && <p className="text-sm text-red-600 mb-2">{formErrors.submit}</p>}
+          <div className="flex gap-2"><button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-brand-900 text-white rounded-lg font-medium text-sm">{saving?'Saving...':editId?'Update Staff':'Save Staff'}</button><button onClick={()=>{setShowForm(false); setEditId(null); resetForm();}} className="px-4 py-2 bg-slate-100 rounded-lg font-medium text-sm">Cancel</button></div>
+        </div>
+      )}
       <DataTable
-        headers={[
-          'Name',
-          'Job Title',
-          'Department',
-          'Status',
-        ]}
+        headers={['Name','Job Title','Department','Status','Actions']}
         rows={rows.map((row: any) => [
           row.user?.name || '-',
           row.jobTitle || '-',
           row.department || '-',
           formatStatus(row.status),
+          <><button onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Deactivate</button></>,
         ])}
       />
     </ModuleWrapper>
