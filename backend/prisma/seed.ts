@@ -507,3 +507,88 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+async function seedTemplates() {
+  const tenant = await prisma.tenant.findUnique({ where: { slug: 'zain-tailors' } });
+  if (!tenant) return;
+  const defs = [
+    { code: 'mens_kurta', name: "Men's Kurta", fields: [
+      { name: 'collar', label: 'Collar / Neck', section: 'Upper Body', type: 'number', required: true, sortOrder: 1 },
+      { name: 'shoulder', label: 'Shoulder', section: 'Upper Body', type: 'number', required: true, sortOrder: 2 },
+      { name: 'chest', label: 'Chest', section: 'Upper Body', type: 'number', required: true, sortOrder: 3 },
+      { name: 'waist', label: 'Waist / Stomach', section: 'Upper Body', type: 'number', required: true, sortOrder: 4 },
+      { name: 'hip', label: 'Hip / Seat', section: 'Upper Body', type: 'number', required: true, sortOrder: 5 },
+      { name: 'armhole', label: 'Armhole', section: 'Upper Body', type: 'number', required: true, sortOrder: 6 },
+      { name: 'bicep', label: 'Bicep', section: 'Upper Body', type: 'number', required: true, sortOrder: 7 },
+      { name: 'sleeve_length', label: 'Sleeve Length', section: 'Upper Body', type: 'number', required: true, sortOrder: 8 },
+      { name: 'cuff', label: 'Wrist / Cuff', section: 'Upper Body', type: 'number', required: true, sortOrder: 9 },
+      { name: 'daman', label: 'Daman / Hem', section: 'Upper Body', type: 'number', required: true, sortOrder: 10 },
+      { name: 'kurta_length', label: 'Kurta Length', section: 'Upper Body', type: 'number', required: true, sortOrder: 11 },
+    ]},
+    { code: 'mens_shalwar_kameez', name: 'Shalwar Kameez', fields: [
+      { name: 'collar', label: 'Collar / Neck', section: 'Kameez', type: 'number', required: true, sortOrder: 1 },
+      { name: 'shoulder', label: 'Shoulder', section: 'Kameez', type: 'number', required: true, sortOrder: 2 },
+      { name: 'chest', label: 'Chest', section: 'Kameez', type: 'number', required: true, sortOrder: 3 },
+      { name: 'waist', label: 'Waist / Stomach', section: 'Kameez', type: 'number', required: true, sortOrder: 4 },
+      { name: 'hip', label: 'Hip / Seat', section: 'Kameez', type: 'number', required: true, sortOrder: 5 },
+      { name: 'armhole', label: 'Armhole', section: 'Kameez', type: 'number', required: true, sortOrder: 6 },
+      { name: 'bicep', label: 'Bicep', section: 'Kameez', type: 'number', required: true, sortOrder: 7 },
+      { name: 'sleeve_length', label: 'Sleeve Length', section: 'Kameez', type: 'number', required: true, sortOrder: 8 },
+      { name: 'cuff', label: 'Wrist / Cuff', section: 'Kameez', type: 'number', required: true, sortOrder: 9 },
+      { name: 'daman', label: 'Daman / Hem', section: 'Kameez', type: 'number', required: true, sortOrder: 10 },
+      { name: 'kameez_length', label: 'Kameez Length', section: 'Kameez', type: 'number', required: true, sortOrder: 11 },
+      { name: 'shalwar_waist', label: 'Shalwar Waist', section: 'Shalwar', type: 'number', required: true, sortOrder: 12 },
+      { name: 'shalwar_hip', label: 'Shalwar Hip / Seat', section: 'Shalwar', type: 'number', required: true, sortOrder: 13 },
+      { name: 'thigh', label: 'Thigh', section: 'Shalwar', type: 'number', required: true, sortOrder: 14 },
+      { name: 'inseam', label: 'Inseam', section: 'Shalwar', type: 'number', required: true, sortOrder: 15 },
+      { name: 'shalwar_length', label: 'Shalwar Length', section: 'Shalwar', type: 'number', required: true, sortOrder: 16 },
+      { name: 'mori', label: 'Mori / Pancha', section: 'Shalwar', type: 'number', required: true, sortOrder: 17 },
+    ]},
+    { code: 'mens_two_piece_suit', name: "Men's 2-Piece Suit", fields: [
+      { name: 'coat_length', label: 'Coat Length', section: 'Coat', type: 'number', required: true, sortOrder: 1 },
+      { name: 'shoulder', label: 'Shoulder', section: 'Coat', type: 'number', required: true, sortOrder: 2 },
+      { name: 'chest', label: 'Chest', section: 'Coat', type: 'number', required: true, sortOrder: 3 },
+      { name: 'waist', label: 'Waist', section: 'Coat', type: 'number', required: true, sortOrder: 4 },
+      { name: 'hip', label: 'Hip / Seat', section: 'Coat', type: 'number', required: true, sortOrder: 5 },
+      { name: 'sleeve_length', label: 'Sleeve Length', section: 'Coat', type: 'number', required: true, sortOrder: 6 },
+      { name: 'bicep', label: 'Bicep', section: 'Coat', type: 'number', required: true, sortOrder: 7 },
+      { name: 'cross_back', label: 'Cross Back', section: 'Coat', type: 'number', required: true, sortOrder: 8 },
+      { name: 'cuff', label: 'Cuff', section: 'Coat', type: 'number', required: true, sortOrder: 9 },
+      { name: 'trouser_waist', label: 'Trouser Waist', section: 'Trouser', type: 'number', required: true, sortOrder: 10 },
+      { name: 'trouser_hip', label: 'Trouser Hip / Seat', section: 'Trouser', type: 'number', required: true, sortOrder: 11 },
+      { name: 'thigh', label: 'Thigh', section: 'Trouser', type: 'number', required: true, sortOrder: 12 },
+      { name: 'knee', label: 'Knee', section: 'Trouser', type: 'number', required: true, sortOrder: 13 },
+      { name: 'bottom', label: 'Bottom Opening', section: 'Trouser', type: 'number', required: true, sortOrder: 14 },
+      { name: 'front_rise', label: 'Front Rise', section: 'Trouser', type: 'number', required: true, sortOrder: 15 },
+      { name: 'back_rise', label: 'Back Rise', section: 'Trouser', type: 'number', required: true, sortOrder: 16 },
+      { name: 'trouser_length', label: 'Trouser Length', section: 'Trouser', type: 'number', required: true, sortOrder: 17 },
+      { name: 'inseam', label: 'Inseam', section: 'Trouser', type: 'number', required: true, sortOrder: 18 },
+    ]},
+  ];
+  for (const def of defs) {
+    const template = await prisma.measurementTemplate.upsert({
+      where: { tenantId_code: { tenantId: tenant.id, code: def.code } },
+      update: { name: def.name, category: def.category || null, defaultUnit: 'inch', status: 'active' },
+      create: { tenantId: tenant.id, name: def.name, code: def.code, category: def.category || null, defaultUnit: 'inch', status: 'active' },
+    });
+    for (const f of def.fields) {
+      await prisma.measurementTemplateField.upsert({
+        where: { templateId_name: { templateId: template.id, name: f.name } },
+        update: { label: f.label, section: f.section || null, type: f.type, required: f.required, sortOrder: f.sortOrder },
+        create: { templateId: template.id, name: f.name, label: f.label, section: f.section || null, type: f.type, required: f.required, sortOrder: f.sortOrder },
+      });
+    }
+  }
+}
+
+async function seedServiceTemplateMappings() {
+  const tenant = await prisma.tenant.findUnique({ where: { slug: 'zain-tailors' } });
+  if (!tenant) return;
+  const map = { "Kurta": "mens_kurta", "Shalwar Kameez": "mens_shalwar_kameez", "Suit": "mens_two_piece_suit" };
+  for (const [name, code] of Object.entries(map)) {
+    const template = await prisma.measurementTemplate.findFirst({ where: { tenantId: tenant.id, code } });
+    if (template) {
+      await prisma.service.updateMany({ where: { tenantId: tenant.id, name }, data: { measurementTemplateId: template.id } });
+    }
+  }
+}
+// Call after seedTemplates inside main if appropriate; for now idempotent standalone.

@@ -188,6 +188,7 @@ model Service {
 
   tenant     Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   category   ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  measurementTemplate MeasurementTemplate? @relation(fields: [measurementTemplateId], references: [id], onDelete: SetNull)
   orderItems OrderItem[]
   bookings   Booking[]
 
@@ -502,6 +503,8 @@ model Measurement {
   garmentId  String?  @map("garment_id")
   createdBy  String   @map("created_by")
   fields     Json // JSON key-value of measurements
+  templateId  String? @map("template_id")
+  unit        String   @default("inch") @map("unit")
   createdAt  DateTime @default(now()) @map("created_at")
 
   tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -524,6 +527,7 @@ model Garment {
   description  String?
   designRefUrl String?  @map("design_ref_url")
   status       String   @default("pending") // pending, measured, cutting, stitching, finishing, quality_check, ready, delivered
+  measurementTemplateId String? @map("measurement_template_id")
   orderId      String?  @map("order_id")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -579,4 +583,42 @@ model TailoringOrder {
   @@unique([orderId])
   @@index([tenantId, status])
   @@map("tailoring_orders")
+}
+
+model MeasurementTemplate {
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  name         String
+  code         String
+  category     String?
+  defaultUnit  String   @default("inch") @map("default_unit")
+  status       String   @default("active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant     Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fields     MeasurementTemplateField[]
+  services   Service[]
+  garments   Garment[]
+  measurements Measurement[]
+
+  @@map("measurement_templates")
+  @@unique([tenantId, code])
+}
+
+model MeasurementTemplateField {
+  id         String   @id @default(uuid())
+  templateId String   @map("template_id")
+  name       String
+  label      String
+  section    String?
+  type       String   @default("number")
+  unit       String?
+  required   Boolean  @default(true)
+  sortOrder  Int      @default(0) @map("sort_order")
+
+  template  MeasurementTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@map("measurement_template_fields")
+  @@unique([templateId, name])
 }
