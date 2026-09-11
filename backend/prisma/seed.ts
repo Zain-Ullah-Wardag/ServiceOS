@@ -474,6 +474,14 @@ async function main() {
 
   console.log('');
   console.log('======================================');
+  console.log('Creating/updating measurement templates...');
+  await seedTemplates();
+  console.log('3 measurement templates ready.');
+
+  console.log('Mapping services to measurement templates...');
+  await seedServiceTemplateMappings();
+  console.log('Service template mappings ready.');
+
   console.log('ServiceOS seed complete');
   console.log('======================================');
   console.log(`Tenant: ${tenant.name}`);
