@@ -269,7 +269,7 @@ app.post(
   validateBody(customerCreateSchema),
   async (req, res) => {
     try {
-      const { name, phone, email, address, notes, measurementId } = req.body;
+      const { name, phone, email, address, notes } = req.body;
 
       const currentCustomers = await prisma.customer.count({
         where: {
@@ -300,7 +300,6 @@ app.post(
           phone,
           email: email || null,
           address: address || null,
-          measurementId: measurementId || null,
           notes: notes || null,
           status: 'active',
         },
@@ -597,7 +596,10 @@ app.post(
 ========================================================= */
 
 app.get(
-  '/api/v1/bookings',
+  //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+  //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  // },
+    '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.read'),
   async (req, res) => {
@@ -637,7 +639,10 @@ app.get(
 );
 
 app.post(
-  '/api/v1/bookings',
+  //     return res.json({ success: true, data: users.map(u => ({ ...u.user, membershipId: u.id })) });
+  //   } catch (e) { console.error('TENANT USERS ERROR', e); return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load users' } }); }
+  // },
+    '/api/v1/bookings',
   authMiddleware,
   requirePermission('bookings.create'),
   validateBody(bookingCreateSchema),
@@ -651,7 +656,6 @@ app.post(
         startTime,
         endTime,
         status,
-        measurementId,
         notes,
       } = req.body;
 
@@ -718,7 +722,6 @@ app.post(
           startTime: new Date(startTime || bookingDate),
           endTime: new Date(endTime || bookingDate),
           status: status || 'pending',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -804,7 +807,7 @@ app.post(
   validateBody(orderCreateSchema),
   async (req, res) => {
     try {
-      const { customerId, items, priority, expectedDate, notes, measurementId } = req.body;
+      const { customerId, items, priority, expectedDate, notes } = req.body;
 
       const customer = await prisma.customer.findFirst({
         where: {
@@ -882,7 +885,6 @@ app.post(
           priority: priority || 'normal',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
           status: 'received',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -986,7 +988,7 @@ app.post(
   validateBody(orderStatusUpdateSchema),
   async (req, res) => {
     try {
-      const { status, notes, measurementId } = req.body;
+      const { status, notes } = req.body;
 
       const existing = await prisma.order.findFirst({
         where: {
@@ -1022,7 +1024,6 @@ app.post(
           orderId: order.id,
           status,
           changedBy: req.user?.id || 'system',
-          measurementId: measurementId || null,
           notes: notes || null,
         },
       });
@@ -2023,7 +2024,7 @@ app.post(
         items,
       } = req.body;
 
-      const result = await prisma.$transaction(async (tx: any) => {
+      const result = await prisma.$transaction(async (tx) => {
         let resolvedOrderId = orderId;
 
         if (!resolvedOrderId) {
@@ -2035,20 +2036,40 @@ app.post(
               if (!svc) throw new Error('Invalid service: ' + it.serviceId);
             }
           }
+          const number =
+            'ORD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+
           const order = await tx.order.create({
             data: {
               tenantId: req.tenantId!,
               customerId,
-              status: 'pending',
+              orderNumber: number,
+              priority: priority || 'normal',
+              expectedDate: deliveryDate ? new Date(deliveryDate) : null,
+              status: status || 'received',
+              notes: notes || null,
+
               items: {
-                create: items.map((it: any) => ({
-                  serviceId: it.serviceId,
-                  quantity: it.quantity || 1,
-                  price: it.price || 0,
-                })),
+                create: items.map((it: any) => {
+                  const quantity = Number(it.quantity ?? 1);
+                  const unitPrice = Number(it.price ?? it.unitPrice ?? 0);
+
+                  return {
+                    quantity,
+                    unitPrice,
+                    total: unitPrice * quantity,
+                    service: {
+                      connect: { id: it.serviceId },
+                    },
+                    tenant: {
+                      connect: { id: req.tenantId! },
+                    },
+                  };
+                }),
               },
             },
           });
+
           resolvedOrderId = order.id;
         } else {
           const order = await tx.order.findFirst({ where: { id: orderId, tenantId: req.tenantId! } });
@@ -2103,7 +2124,6 @@ app.post(
     }
   },
 );
-
 app.patch(
   '/api/v1/tailoring/orders/:id/status',
   authMiddleware,
@@ -2298,7 +2318,6 @@ app.post(
         serviceId,
         notes,
         expectedDate,
-        measurementId,
       } = req.body;
 
       const tenant = await prisma.tenant.findUnique({
@@ -2419,7 +2438,7 @@ app.post(
           orderNumber: number,
           status: 'received',
           expectedDate: expectedDate ? new Date(expectedDate) : null,
-          measurementId: measurementId || null,
+
           notes: notes || null,
         },
       });
@@ -2926,71 +2945,6 @@ async function checkSubscriptionLimit(
       }
     },
   ),
-
-  app.get('/api/v1/tailoring/measurement-templates', authMiddleware, requirePermission('tailoring.read'), async (req, res) => {
-    try { const list = await prisma.measurementTemplate.findMany({ where: { tenantId: req.tenantId! }, include: { fields: true } }); return res.json({ success: true, data: list }); } catch { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load templates' } }); }
-  }),
-  app.get('/api/v1/tailoring/measurement-templates/:id', authMiddleware, requirePermission('tailoring.read'), async (req, res) => {
-    try { const t = await prisma.measurementTemplate.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! }, include: { fields: true } }); if (!t) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Template not found' } }); return res.json({ success: true, data: t }); } catch { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to load template' } }); }
-  }),
-  app.get('/api/v1/tailoring/orders/:id/measurement-template', authMiddleware, requirePermission('tailoring.read'), async (req, res) => {
-    try {
-      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! }, include: { garment: true, service: { include: { measurementTemplate: true } } } });
-      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
-      const templateId = order.garment?.measurementTemplateId || order.service?.measurementTemplateId || null;
-      const template = templateId ? await prisma.measurementTemplate.findUnique({ where: { id: templateId }, include: { fields: true } }) : null;
-      return res.json({ success: true, data: template || { id: null, name: null, fields: [] } });
-    } catch { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to resolve template' } }); }
-  }),
-  app.post('/api/v1/tailoring/orders/:id/measurements', authMiddleware, requirePermission('tailoring.update'), validateBody(z.object({ garmentId: z.string().optional(), templateId: z.string(), unit: z.string().optional(), fields: z.record(z.any()) })), async (req, res) => {
-    try {
-      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
-      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
-      const garment = req.body.garmentId ? await prisma.garment.findFirst({ where: { id: req.body.garmentId, tenantId: req.tenantId! } }) : null;
-      if (req.body.garmentId && !garment) return res.status(400).json({ success: false, error: { code: 'INVALID_GARMENT', message: 'Garment not in tenant' } });
-      if (garment && garment.customerId !== order.customerId) return res.status(400).json({ success: false, error: { code: 'MISMATCH', message: 'Garment customer does not match order' } });
-      const template = await prisma.measurementTemplate.findFirst({ where: { id: req.body.templateId, tenantId: req.tenantId! }, include: { fields: true } });
-      if (!template) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Template not found' } });
-      const submitted = req.body.fields || {};
-      const requiredFields = template.fields.filter((f) => f.required).map((f) => f.name);
-      for (const rk of requiredFields) if (submitted[rk] === undefined || submitted[rk] === null || submitted[rk] === '') return res.status(400).json({ success: false, error: { code: 'MISSING_FIELD', message: `Required field missing: ${rk}` } });
-      for (const key of Object.keys(submitted)) { if (!template.fields.find((f) => f.name === key)) return res.status(400).json({ success: false, error: { code: 'INVALID_FIELD', message: `Unknown field: ${key}` } }); }
-      const measurement = await prisma.$transaction(async (tx: any) => {
-        const m = await tx.measurement.create({ data: { tenantId: req.tenantId!, customerId: order.customerId, garmentId: garment?.id || null, createdBy: req.user!.id, fields: submitted, templateId: req.body.templateId, unit: req.body.unit || 'inch' } });
-        await tx.tailoringOrder.update({ where: { id: order.id }, data: { measurementId: m.id, status: 'measurement' } });
-        await tx.orderStatusHistory.create({ data: { orderId: order.id, tenantId: req.tenantId!, status: 'measurement', changedBy: req.user!.id, notes: 'Measurements taken' } });
-        return m;
-      });
-      return res.json({ success: true, data: measurement });
-    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to save measurement' } }); }
-  }),
-  app.post('/api/v1/tailoring/orders/:id/confirm', authMiddleware, requirePermission('tailoring.update'), async (req, res) => {
-    try {
-      const { expectedDate, priority, notes } = req.body;
-      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
-      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
-      if (order.status !== 'received') return res.status(409).json({ success: false, error: { code: 'INVALID_TRANSITION', message: 'Can only confirm from received' } });
-      const updated = await prisma.$transaction(async (tx: any) => {
-        const o = await tx.tailoringOrder.update({ where: { id: order.id }, data: { status: 'confirmed', expectedDate: expectedDate ? new Date(expectedDate) : order.expectedDate, priority: priority || order.priority, notes: notes || order.notes } });
-        await tx.orderStatusHistory.create({ data: { orderId: order.id, tenantId: req.tenantId!, status: 'confirmed', changedBy: req.user!.id, notes: notes || 'Order confirmed' } });
-        return o;
-      });
-      return res.json({ success: true, data: updated });
-    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to confirm order' } }); }
-  }),
-  app.patch('/api/v1/tailoring/orders/:id/assign-staff', authMiddleware, requirePermission('tailoring.update'), validateBody(z.object({ staffId: z.string() })), async (req, res) => {
-    try {
-      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
-      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
-      if (req.body.staffId) {
-        const staff = await prisma.staff.findFirst({ where: { id: req.body.staffId, tenantId: req.tenantId! } });
-        if (!staff || staff.status !== 'active') return res.status(400).json({ success: false, error: { code: 'INVALID_STAFF', message: 'Staff not active or not in tenant' } });
-      }
-      const updated = await prisma.tailoringOrder.update({ where: { id: req.params.id }, data: { staffId: req.body.staffId || null } });
-      return res.json({ success: true, data: updated });
-    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to assign staff' } }); }
-  }),
-
 /* =========================================================
    ERROR HANDLER
 ========================================================= */
