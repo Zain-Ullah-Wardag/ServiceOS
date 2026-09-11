@@ -1,5 +1,5 @@
 CREATE TABLE "measurement_templates" (
-    "id" TEXT NOT NULL PRIMARY KEY DEFAULT uuid_generate_v4(),
+    "id" TEXT NOT NULL PRIMARY KEY,
     "tenant_id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "code" TEXT NOT NULL,
@@ -12,7 +12,7 @@ CREATE TABLE "measurement_templates" (
 CREATE UNIQUE INDEX "measurement_templates_tenantId_code_key" ON "measurement_templates"("tenant_id", "code");
 ALTER TABLE "measurement_templates" ADD CONSTRAINT "measurement_templates_tenantId_fkey" FOREIGN KEY ("tenant_id") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 CREATE TABLE "measurement_template_fields" (
-    "id" TEXT NOT NULL PRIMARY KEY DEFAULT uuid_generate_v4(),
+    "id" TEXT NOT NULL PRIMARY KEY,
     "template_id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "label" TEXT NOT NULL,
