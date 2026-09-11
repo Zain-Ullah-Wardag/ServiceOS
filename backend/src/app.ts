@@ -105,6 +105,15 @@ app.use(
    HEALTH
 ========================================================= */
 
+function isValidTailoringTransition(fromStatus: string, toStatus: string): boolean {
+  const allowed: Record<string, string[]> = {
+    received: ['confirmed','cancelled'], confirmed: ['measurement','cancelled'], measurement: ['cutting','cancelled'],
+    cutting: ['stitching'], stitching: ['finishing'], finishing: ['quality_check'], quality_check: ['ready','stitching','finishing'],
+    ready: ['delivered'], delivered: [], cancelled: []
+  };
+  return (allowed[fromStatus] || []).includes(toStatus);
+}
+
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -2945,6 +2954,105 @@ async function checkSubscriptionLimit(
       }
     },
   ),
+  app.patch('/api/v1/tailoring/orders/:id/status', authMiddleware, requirePermission('tailoring.update'), validateBody(z.object({ status: z.string(), notes: z.string().optional() })), async (req, res) => {
+    try {
+      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
+      if (order.status === 'delivered' || order.status === 'cancelled') return res.status(409).json({ success: false, error: { code: 'INVALID_STATUS_TRANSITION', message: 'Terminal state' } });
+      const allowed = {
+        received: ['confirmed','cancelled'], confirmed: ['measurement','cancelled'], measurement: ['cutting','cancelled'],
+        cutting: ['stitching'], stitching: ['finishing'], finishing: ['quality_check'],
+        quality_check: ['ready','stitching','finishing'], ready: ['delivered'], delivered: [], cancelled: []
+      };
+      if (!(allowed[order.status] || []).includes(req.body.status)) return res.status(409).json({ success: false, error: { code: 'INVALID_STATUS_TRANSITION', message: 'Invalid transition' } });
+      if (req.body.status === 'confirmed' && !(order.deliveryDate || (await prisma.order.findUnique({ where: { id: order.orderId } }))?.expectedDate)) return res.status(400).json({ success: false, error: { code: 'DELIVERY_DATE_REQUIRED', message: 'Expected delivery date required' } });
+      if (req.body.status === 'measurement' && !order.measurementId) return res.status(409).json({ success: false, error: { code: 'MEASUREMENT_REQUIRED', message: 'Measurement required' } });
+      if (req.body.status === 'cutting') {
+        if (!order.staffId) return res.status(409).json({ success: false, error: { code: 'STAFF_REQUIRED', message: 'Assigned staff required' } });
+        const staff = await prisma.staff.findFirst({ where: { id: order.staffId, tenantId: req.tenantId!, status: 'active' } });
+        if (!staff) return res.status(409).json({ success: false, error: { code: 'STAFF_REQUIRED', message: 'Assigned staff inactive or missing' } });
+      }
+      const updated = await prisma.$transaction(async (tx: any) => {
+        await tx.tailoringOrder.update({ where: { id: order.id }, data: { status: req.body.status } });
+        if (order.garmentId) await tx.garment.update({ where: { id: order.garmentId }, data: { status: mapGarmentStatus(req.body.status) } });
+        await tx.orderStatusHistory.create({ data: { orderId: order.orderId, tenantId: req.tenantId!, status: req.body.status, changedBy: req.user!.id, notes: req.body.notes || '' } });
+        const parentOrder = await tx.order.findUnique({ where: { id: order.orderId } });
+        if (parentOrder) await tx.order.update({ where: { id: parentOrder.id }, data: { status: req.body.status, completedDate: req.body.status === 'delivered' ? new Date() : parentOrder.completedDate } });
+        return await tx.tailoringOrder.findUnique({ where: { id: order.id } });
+      });
+      await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'TAILORING_STATUS_CHANGED', entity: 'TailoringOrder', entityId: order.id });
+      return res.json({ success: true, data: updated });
+    } catch (e) {
+      console.error('STATUS CHANGE ERROR', e);
+      return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to update status' } });
+    }
+  }),
+  app.post('/api/v1/tailoring/orders/:id/confirm', authMiddleware, requirePermission('tailoring.update'), async (req, res) => {
+    try {
+      const { deliveryDate, priority, notes } = req.body;
+      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
+      if (order.status !== 'received') return res.status(409).json({ success: false, error: { code: 'INVALID_TRANSITION', message: 'Can only confirm from received' } });
+      const resolvedDate = deliveryDate ? new Date(deliveryDate) : (order.deliveryDate ? new Date(order.deliveryDate) : (await prisma.order.findUnique({ where: { id: order.orderId } }))?.expectedDate ? new Date((await prisma.order.findUnique({ where: { id: order.orderId } }))!.expectedDate!) : null);
+      if (!resolvedDate) return res.status(400).json({ success: false, error: { code: 'DELIVERY_DATE_REQUIRED', message: 'Expected delivery date required' } });
+      const updated = await prisma.$transaction(async (tx: any) => {
+        const o = await tx.tailoringOrder.update({ where: { id: order.id }, data: { status: 'confirmed', deliveryDate: resolvedDate, priority: priority || order.priority, notes: notes || order.notes } });
+        await tx.order.update({ where: { id: order.orderId || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.orderId || order.id }, data: { status: 'confirmed', expectedDate: resolvedDate, priority: priority || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.priority, notes: notes || order.notes } });
+        await tx.orderStatusHistory.create({ data: { orderId: order.orderId || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.orderId || order.id, tenantId: req.tenantId!, status: 'confirmed', changedBy: req.user!.id, notes: notes || 'Order confirmed' } });
+        return o;
+      });
+      await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'TAILORING_ORDER_CONFIRMED', entity: 'TailoringOrder', entityId: order.id });
+      return res.json({ success: true, data: updated });
+    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to confirm order' } }); }
+  }),
+  app.patch('/api/v1/tailoring/orders/:id/staff', authMiddleware, requirePermission('tailoring.update'), validateBody(z.object({ staffId: z.string().optional() })), async (req, res) => {
+    try {
+      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
+      if (order.status === 'delivered' || order.status === 'cancelled') return res.status(409).json({ success: false, error: { code: 'INVALID_TRANSITION', message: 'Cannot assign staff after terminal state' } });
+      if (req.body.staffId) {
+        const staff = await prisma.staff.findFirst({ where: { id: req.body.staffId, tenantId: req.tenantId! } });
+        if (!staff || staff.status !== 'active') return res.status(400).json({ success: false, error: { code: 'INVALID_STAFF', message: 'Staff not active or not in tenant' } });
+      }
+      const updated = await prisma.tailoringOrder.update({ where: { id: req.params.id }, data: { staffId: req.body.staffId || null } });
+      await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'TAILORING_STAFF_ASSIGNED', entity: 'TailoringOrder', entityId: order.id });
+      return res.json({ success: true, data: updated });
+    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to assign staff' } }); }
+  }),
+  app.post('/api/v1/tailoring/orders/:id/qc', authMiddleware, requirePermission('tailoring.update'), validateBody(z.object({ result: z.enum(['pass', 'rework']), notes: z.string().optional(), returnTo: z.enum(['stitching', 'finishing']).optional() })), async (req, res) => {
+    try {
+      const order = await prisma.tailoringOrder.findFirst({ where: { id: req.params.id, tenantId: req.tenantId! } });
+      if (!order) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Order not found' } });
+      if (order.status !== 'quality_check') return res.status(409).json({ success: false, error: { code: 'INVALID_TRANSITION', message: 'Only quality_check can QC' } });
+      const { result, notes, returnTo } = req.body;
+      if (result === 'pass') {
+        const updated = await prisma.$transaction(async (tx: any) => {
+          await tx.tailoringOrder.update({ where: { id: order.id }, data: { status: 'ready' } });
+          await tx.order.update({ where: { id: order.orderId || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.orderId || order.id }, data: { status: 'ready', completedDate: new Date() } });
+          await tx.garment.updateMany({ where: { id: order.garmentId || undefined, tenantId: req.tenantId! }, data: { status: 'ready' } });
+          await tx.orderStatusHistory.create({ data: { orderId: order.orderId || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.orderId || order.id, tenantId: req.tenantId!, status: 'ready', changedBy: req.user!.id, notes: notes || 'QC pass' } });
+          return await tx.tailoringOrder.findUnique({ where: { id: order.id } });
+        });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'TAILORING_QC_PASSED', entity: 'TailoringOrder', entityId: order.id });
+        return res.json({ success: true, data: updated });
+      } else if (result === 'rework') {
+        if (!returnTo) return res.status(400).json({ success: false, error: { code: 'RETURN_STAGE_REQUIRED', message: 'returnTo required for rework' } });
+        if (returnTo !== 'stitching' && returnTo !== 'finishing') return res.status(400).json({ success: false, error: { code: 'INVALID_RETURN_STAGE', message: 'Return must be stitching or finishing' } });
+        const updated = await prisma.$transaction(async (tx: any) => {
+          await tx.tailoringOrder.update({ where: { id: order.id }, data: { status: returnTo } });
+          const parentId = order.orderId || (await tx.tailoringOrder.findUnique({ where: { id: order.id } }))?.orderId || order.id;
+          await tx.order.update({ where: { id: parentId }, data: { status: returnTo } });
+          await tx.garment.updateMany({ where: { id: order.garmentId || undefined, tenantId: req.tenantId! }, data: { status: returnTo } });
+          await tx.orderStatusHistory.create({ data: { orderId: parentId, tenantId: req.tenantId!, status: returnTo, changedBy: req.user!.id, notes: notes || 'QC rework' } });
+          return await tx.tailoringOrder.findUnique({ where: { id: order.id } });
+        });
+        await auditLog({ tenantId: req.tenantId!, userId: req.user!.id, action: 'TAILORING_QC_REWORK', entity: 'TailoringOrder', entityId: order.id });
+        return res.json({ success: true, data: updated });
+      }
+      return res.status(400).json({ success: false, error: { code: 'INVALID_QC_RESULT', message: 'result must be pass or rework' } });
+    } catch (e) { return res.status(500).json({ success: false, error: { code: 'SERVER_ERROR', message: 'Unable to process QC' } }); }
+  }),
+
 /* =========================================================
    ERROR HANDLER
 ========================================================= */
