@@ -107,7 +107,7 @@ export const garmentCreateSchema = z.object({
 });
 
 export const tailoringOrderCreateSchema = z.object({
-  orderId: z.string().min(1),
+  orderId: z.string().min(1).optional(),
   customerId: z.string().min(1),
   garmentId: z.string().optional(),
   staffId: z.string().optional(),
@@ -116,4 +116,10 @@ export const tailoringOrderCreateSchema = z.object({
   priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
   measurementId: z.string().optional(),
   notes: z.string().optional(),
+  items: z.array(z.object({
+    serviceId: z.string().min(1),
+    quantity: z.number().finite().int().positive().optional(),
+    price: z.number().finite().nonnegative().optional(),
+    unitPrice: z.number().finite().nonnegative().optional(),
+  })).optional(),
 });

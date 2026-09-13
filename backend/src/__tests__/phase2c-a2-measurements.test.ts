@@ -275,4 +275,131 @@ describe('Phase 2C-A2.2 real PostgreSQL order-aware measurements', () => {
     expect(list.status).toBe(200);
     expect(list.body.data).toEqual(expect.arrayContaining([expect.objectContaining({ id: response.body.data.id })]));
   });
+  describe('A3.2 atomic tailoring-order creation', () => {
+    async function creationInput() {
+      const garment = await prisma.garment.create({ data: { tenantId, customerId, name: 'New order garment' } });
+      const service = await prisma.service.create({ data: { tenantId, name: 'New order service', price: 100 } });
+      return { garment, service };
+    }
+    function create(body: object) {
+      return request(app).post('/api/v1/tailoring/orders').set('Authorization', `Bearer ${token}`).send(body);
+    }
+    async function counts() {
+      return Promise.all([
+        prisma.order.count({ where: { tenantId } }),
+        prisma.orderItem.count({ where: { tenantId } }),
+        prisma.tailoringOrder.count({ where: { tenantId } }),
+      ]);
+    }
+
+    it.each(['price', 'unitPrice'])('creates a new parent and tailoring order using %s without orderId', async priceKey => {
+      const { garment, service } = await creationInput();
+      const before = await counts();
+      const deliveryDate = '2026-12-20';
+      const response = await create({ customerId, garmentId: garment.id, deliveryDate, items: [{ serviceId: service.id, quantity: 2, [priceKey]: 100 }] });
+      expect(response.status).toBe(201);
+      expect(response.body.success).toBe(true);
+      const tailoring = await prisma.tailoringOrder.findUniqueOrThrow({ where: { id: response.body.data.id }, include: { order: { include: { items: true } } } });
+      expect(response.body.data).toMatchObject({ id: tailoring.id, orderId: tailoring.orderId, customerId, garmentId: garment.id, status: 'received', priority: 'normal' });
+      expect(tailoring).toMatchObject({ tenantId, customerId, garmentId: garment.id, status: 'received', priority: 'normal', staffId: null, measurementId: null });
+      expect(tailoring.order).toMatchObject({ tenantId, customerId, status: 'received', priority: 'normal' });
+      expect(tailoring.order.orderNumber).toMatch(/^ORD-/);
+      expect(tailoring.order.expectedDate).toEqual(new Date(deliveryDate));
+      expect(tailoring.deliveryDate).toEqual(new Date(deliveryDate));
+      expect(tailoring.order.items).toHaveLength(1);
+      const item = tailoring.order.items[0];
+      expect(item).toMatchObject({ serviceId: service.id, tenantId, orderId: tailoring.orderId, quantity: 2 });
+      expect(Number(item.unitPrice)).toBe(100);
+      expect(Number(item.total)).toBe(200);
+      expect(await counts()).toEqual(before.map(value => value + 1));
+    });
+
+    it('preserves quantity/price/date defaults and leaves garment optional in the backend', async () => {
+      const { service } = await creationInput();
+      const response = await create({ customerId, items: [{ serviceId: service.id }] });
+      expect(response.status).toBe(201);
+      const tailoring = await prisma.tailoringOrder.findUniqueOrThrow({ where: { id: response.body.data.id }, include: { order: { include: { items: true } } } });
+      expect(tailoring.garmentId).toBeNull();
+      expect(tailoring.deliveryDate).toBeNull();
+      expect(tailoring.order.expectedDate).toBeNull();
+      expect(tailoring.order.items[0].quantity).toBe(1);
+      expect(Number(tailoring.order.items[0].unitPrice)).toBe(0);
+      expect(Number(tailoring.order.items[0].total)).toBe(0);
+    });
+
+    it('preserves price precedence over unitPrice, including a zero price', async () => {
+      const { garment, service } = await creationInput();
+      const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: service.id, quantity: 2, price: 0, unitPrice: 100 }] });
+      expect(response.status).toBe(201);
+      const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: response.body.data.orderId } });
+      expect(Number(item.unitPrice)).toBe(0);
+      expect(Number(item.total)).toBe(0);
+    });
+
+    it('creates multiple items and preserves explicit priority and notes', async () => {
+      const { garment, service } = await creationInput();
+      const other = await prisma.service.create({ data: { tenantId, name: 'Second service', price: 50 } });
+      const response = await create({ customerId, garmentId: garment.id, priority: 'urgent', notes: 'Two items', items: [{ serviceId: service.id, quantity: 2, unitPrice: 100 }, { serviceId: other.id, price: 50 }] });
+      expect(response.status).toBe(201);
+      const parent = await prisma.order.findUniqueOrThrow({ where: { id: response.body.data.orderId }, include: { items: true } });
+      expect(parent).toMatchObject({ priority: 'urgent', notes: 'Two items' });
+      expect(response.body.data).toMatchObject({ priority: 'urgent', notes: 'Two items' });
+      expect(parent.items).toHaveLength(2);
+      expect(parent.items.reduce((sum, item) => sum + Number(item.total), 0)).toBe(250);
+    });
+
+    it('keeps the existing-parent path working without items', async () => {
+      const { garment } = await creationInput();
+      const parent = await prisma.order.create({ data: { tenantId, customerId, orderNumber: `EXISTING-${randomUUID()}` } });
+      const before = await counts();
+      const response = await create({ orderId: parent.id, customerId, garmentId: garment.id });
+      expect(response.status).toBe(201);
+      expect(response.body.data.orderId).toBe(parent.id);
+      expect(await counts()).toEqual([before[0], before[1], before[2] + 1]);
+    });
+
+    it('rejects cross-tenant services without creating any order records', async () => {
+      const { garment } = await creationInput();
+      const foreignService = await prisma.service.create({ data: { tenantId: foreignTenantId, name: 'Foreign service', price: 100 } });
+      const before = await counts();
+      const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: foreignService.id, unitPrice: 100 }] });
+      // Existing route errors remain unchanged; this phase repairs only its validator.
+      expect(response.status).toBe(500);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.message).toContain('Invalid service');
+      expect(await counts()).toEqual(before);
+    });
+
+    it.each(['customer', 'tenant'])('rolls back parent and items on garment %s mismatch', async mismatch => {
+      const { garment, service } = await creationInput();
+      await prisma.garment.update({ where: { id: garment.id }, data: mismatch === 'customer' ? { customerId: otherCustomerId } : { tenantId: foreignTenantId } });
+      const before = await counts();
+      const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: service.id, quantity: 2, unitPrice: 100 }] });
+      expect(response.status).toBe(500);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.message).toBe(mismatch === 'customer' ? 'Garment customer mismatch' : 'Invalid garment');
+      expect(await counts()).toEqual(before);
+    });
+
+    it('still requires items when creating a parent order', async () => {
+      const before = await counts();
+      const response = await create({ customerId });
+      expect(response.status).toBe(500);
+      expect(response.body.error.message).toBe('items required');
+      expect(await counts()).toEqual(before);
+    });
+
+    it.each([
+      { quantity: 0 }, { quantity: -1 }, { quantity: 1.5 }, { quantity: '2' },
+      { price: -1 }, { unitPrice: -1 }, { price: '100' }, { unitPrice: null }, { serviceId: '' },
+    ])('rejects invalid item input %j before creating records', async invalid => {
+      const { garment, service } = await creationInput();
+      const before = await counts();
+      const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: service.id, quantity: 2, unitPrice: 100, ...invalid }] });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+      expect(await counts()).toEqual(before);
+    });
+  });
+
 });

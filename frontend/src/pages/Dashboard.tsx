@@ -1392,6 +1392,172 @@ type ProductionAction = {
   returnTo?: 'stitching' | 'finishing';
 };
 
+type NewTailoringItem = { key: number; serviceId: string; quantity: string; unitPrice: string };
+
+function NewTailoringOrderForm({ currency, onClose, onCreated }: {
+  currency: string;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [customers, setCustomers] = useState<{ id: string; name: string; status?: string | null }[]>([]);
+  const [services, setServices] = useState<{ id: string; name: string; price: string | number; status?: string | null }[]>([]);
+  const [garments, setGarments] = useState<{ id: string; name: string; customerId: string }[]>([]);
+  const [customerId, setCustomerId] = useState('');
+  const [garmentId, setGarmentId] = useState('');
+  const [items, setItems] = useState<NewTailoringItem[]>([{ key: 0, serviceId: '', quantity: '1', unitPrice: '' }]);
+  const [deliveryDate, setDeliveryDate] = useState('');
+  const [priority, setPriority] = useState('normal');
+  const [notes, setNotes] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [submitError, setSubmitError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const nextKey = useRef(1);
+  const saveLock = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { panelRef.current?.focus(); }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    async function load() {
+      setLoading(true);
+      setLoadError('');
+      try {
+        const responses = await Promise.all(['/customers', '/services', '/tailoring/garments'].map(path => api(path, { signal: controller.signal })));
+        if (controller.signal.aborted) return;
+        for (const response of responses) {
+          if (!response?.success || !Array.isArray(response.data)) throw new Error(response?.error?.message || 'Unable to load order form data.');
+        }
+        const active = (row: { status?: string | null }) => !row.status || row.status === 'active';
+        setCustomers(responses[0].data.filter(active));
+        setServices(responses[1].data.filter(active));
+        setGarments(responses[2].data);
+      } catch (e) {
+        if (!controller.signal.aborted) setLoadError(e instanceof Error ? e.message : 'Unable to load order form data.');
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }
+    void load();
+    return () => controller.abort();
+  }, [loadAttempt]);
+
+  const customerGarments = garments.filter(garment => garment.customerId === customerId);
+  function selectCustomer(id: string) {
+    setCustomerId(id);
+    setGarmentId(''); // Never retain a garment selected for another customer.
+    const matches = garments.filter(garment => garment.customerId === id);
+    if (id && matches.length === 1) setGarmentId(matches[0].id);
+    setSubmitError('');
+  }
+  function updateItem(key: number, change: Partial<NewTailoringItem>) {
+    setItems(previous => previous.map(item => item.key === key ? { ...item, ...change } : item));
+  }
+  function lineTotal(item: NewTailoringItem): number | null {
+    const quantity = Number(item.quantity);
+    const unitPrice = Number(item.unitPrice);
+    const total = quantity * unitPrice;
+    return item.serviceId && item.quantity.trim() && item.unitPrice.trim() && Number.isInteger(quantity) && quantity > 0 && unitPrice >= 0 && Number.isFinite(total) ? total : null;
+  }
+  const totals = items.map(lineTotal);
+  const total = totals.every(value => value !== null) ? totals.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (saveLock.current || loading || loadError) return;
+    setSubmitError('');
+    if (!customers.some(customer => customer.id === customerId)) { setSubmitError('Select a customer.'); return; }
+    if (!customerGarments.some(garment => garment.id === garmentId)) { setSubmitError('Select a garment belonging to this customer.'); return; }
+    if (!items.length) { setSubmitError('Add at least one service item.'); return; }
+    for (const [index, item] of items.entries()) {
+      if (!services.some(service => service.id === item.serviceId) || lineTotal(item) === null) {
+        setSubmitError(`Item ${index + 1}: select a service, a positive whole-number quantity and a non-negative unit price.`); return;
+      }
+    }
+    if (total === null || !Number.isFinite(total)) { setSubmitError('Enter valid item amounts.'); return; }
+    saveLock.current = true;
+    setSaving(true);
+    try {
+      const response = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify({
+        customerId, garmentId, priority,
+        deliveryDate: deliveryDate || undefined,
+        notes: notes || undefined,
+        items: items.map(item => ({ serviceId: item.serviceId, quantity: Number(item.quantity), unitPrice: Number(item.unitPrice) })),
+      }) });
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to create tailoring order.');
+      // Parent closes/unmounts the form, clearing all state before refreshing.
+      await onCreated();
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : 'Unable to create tailoring order.');
+    } finally {
+      saveLock.current = false;
+      setSaving(false);
+    }
+  }
+
+  const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm disabled:opacity-50';
+  const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed';
+  return (
+    <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="new-tailoring-title" aria-busy={loading || saving} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div><h3 id="new-tailoring-title" className="font-serif text-xl">New Tailoring Order</h3><p className="text-sm text-slate-500">Create an order in Received, then confirm it to begin production.</p></div>
+        <button type="button" aria-label="Close new tailoring order" disabled={saving} onClick={onClose} className={buttonClass}><X size={16} /></button>
+      </div>
+      {loading && <p role="status" className="text-sm text-slate-500">Loading customers, services and garments…</p>}
+      {loadError && <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm"><p>{loadError}</p><button type="button" disabled={loading} onClick={() => setLoadAttempt(attempt => attempt + 1)} className={`${buttonClass} mt-2`}>Retry Loading</button></div>}
+      {!loading && !loadError && <form onSubmit={submit} className="space-y-4">
+        <fieldset disabled={saving} className="space-y-4">
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div><label htmlFor="new-tailoring-customer" className="block text-sm font-medium mb-1">Customer *</label>
+              <select id="new-tailoring-customer" required value={customerId} onChange={e => selectCustomer(e.target.value)} className={inputClass}><option value="">Select customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select>
+              {!customers.length && <p className="mt-2 text-sm text-slate-500">No active customers available. Add a customer in the Customers section.</p>}
+            </div>
+            <div><label htmlFor="new-tailoring-garment" className="block text-sm font-medium mb-1">Garment *</label>
+              <select id="new-tailoring-garment" required disabled={!customerId || !customerGarments.length} value={garmentId} onChange={e => setGarmentId(e.target.value)} className={inputClass}>
+                <option value="">{customerId ? 'Select garment' : 'Select a customer first'}</option>{customerGarments.map(garment => <option key={garment.id} value={garment.id}>{garment.name}</option>)}
+              </select>
+              {customerId && !customerGarments.length && <p className="mt-2 text-sm text-slate-600">No garments found for this customer. <Link to="/dashboard/garments" className="text-brand-700 font-semibold underline">Add Garment</Link> in the Garments section, then return here to create the order.</p>}
+              {customerGarments.length === 1 && <p className="mt-2 text-xs text-slate-500">Only garment automatically selected.</p>}
+            </div>
+          </div>
+          <div className="space-y-3">
+            <h4 className="font-semibold text-sm">Service items *</h4>
+            {!services.length && <p className="text-sm text-slate-500">No active services available. Add a service in the Services section.</p>}
+            {items.map((item, index) => <div key={item.key} className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 rounded-xl border border-slate-200 p-4 items-end">
+              <div><label htmlFor={`new-service-${item.key}`} className="block text-sm font-medium mb-1">Service {index + 1} *</label>
+                <select id={`new-service-${item.key}`} required value={item.serviceId} onChange={e => {
+                  const service = services.find(candidate => candidate.id === e.target.value);
+                  updateItem(item.key, { serviceId: e.target.value, quantity: '1', unitPrice: service ? String(service.price) : '' });
+                }} className={inputClass}><option value="">Select service</option>{services.map(service => <option key={service.id} value={service.id}>{service.name}</option>)}</select>
+              </div>
+              <div><label htmlFor={`new-quantity-${item.key}`} className="block text-sm font-medium mb-1">Quantity {index + 1} *</label><input id={`new-quantity-${item.key}`} type="number" required min="1" step="1" value={item.quantity} onChange={e => updateItem(item.key, { quantity: e.target.value })} className={inputClass} /></div>
+              <div><label htmlFor={`new-price-${item.key}`} className="block text-sm font-medium mb-1">Unit Price {index + 1} ({currency}) *</label><input id={`new-price-${item.key}`} type="number" required min="0" step="any" value={item.unitPrice} onChange={e => updateItem(item.key, { unitPrice: e.target.value })} className={inputClass} /></div>
+              <div className="text-sm py-2"><span className="block text-slate-500">Line Total</span><output aria-label={`Line total ${index + 1}`} className="font-semibold">{lineTotal(item) === null ? '—' : formatMoney(lineTotal(item), currency)}</output></div>
+              <button type="button" aria-label={`Remove item ${index + 1}`} disabled={items.length === 1} onClick={() => setItems(previous => previous.filter(candidate => candidate.key !== item.key))} className={buttonClass}>Remove</button>
+            </div>)}
+            <div className="flex flex-wrap justify-between items-center gap-3">
+              <button type="button" onClick={() => setItems(previous => [...previous, { key: nextKey.current++, serviceId: '', quantity: '1', unitPrice: '' }])} className={buttonClass}>+ Add Item</button>
+              <p className="text-sm font-semibold">Total: <output aria-label="Order total">{total !== null && Number.isFinite(total) ? formatMoney(total, currency) : '—'}</output></p>
+            </div>
+            <p className="text-xs text-slate-500">Totals are recalculated by the server when the order is created.</p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div><label htmlFor="new-tailoring-date" className="block text-sm font-medium mb-1">Delivery Date</label><input id="new-tailoring-date" type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className={inputClass} /></div>
+            <div><label htmlFor="new-tailoring-priority" className="block text-sm font-medium mb-1">Priority</label><select id="new-tailoring-priority" value={priority} onChange={e => setPriority(e.target.value)} className={inputClass}>{['low', 'normal', 'high', 'urgent'].map(value => <option key={value} value={value}>{formatStatus(value)}</option>)}</select></div>
+          </div>
+          <div><label htmlFor="new-tailoring-notes" className="block text-sm font-medium mb-1">Notes (optional)</label><textarea id="new-tailoring-notes" rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} /></div>
+        </fieldset>
+        {submitError && <p role="alert" className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{submitError}</p>}
+        <div className="flex gap-2">
+          <button type="submit" disabled={saving || !customerId || !garmentId || !services.length} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Creating…' : 'Create Tailoring Order'}</button>
+          <button type="button" disabled={saving} onClick={onClose} className={buttonClass}>Cancel</button>
+        </div>
+      </form>}
+    </div>
+  );
+}
+
 function ProductionModule({ rows, loading, error, refresh, currency }: {
   rows: ProductionOrder[];
   loading: boolean;
@@ -1399,6 +1565,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   refresh: () => Promise<void>;
   currency: string;
 }) {
+  const [showNewOrder, setShowNewOrder] = useState(false);
   const [panel, setPanel] = useState<{ row: ProductionOrder; action: ProductionAction } | null>(null);
   const [template, setTemplate] = useState<ProductionTemplate | null>(null);
   const [staff, setStaff] = useState<{ id: string; user?: { name: string }; jobTitle: string; status: string }[]>([]);
@@ -1427,7 +1594,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   }
 
   async function openPanel(row: ProductionOrder, action: ProductionAction) {
-    if (requestLock.current) return;
+    if (requestLock.current || showNewOrder) return;
     requestLock.current = true;
     setPanel({ row, action });
     setNotice('');
@@ -1548,7 +1715,15 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-brand-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
 
   return (
-    <ModuleWrapper title="Production" description="Confirm, measure and track tailoring orders through delivery." loading={loading} error={error} refresh={() => { if (!requestLock.current) void refresh(); }} count={rows.length}>
+    <ModuleWrapper title="Production" description="Confirm, measure and track tailoring orders through delivery." loading={loading} error={error} refresh={() => { if (!requestLock.current && !showNewOrder) void refresh(); }} count={rows.length}>
+      <div className="flex justify-end">
+        <button type="button" disabled={busy || !!panel || showNewOrder} onClick={() => { setNotice(''); setShowNewOrder(true); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">+ New Tailoring Order</button>
+      </div>
+      {showNewOrder && <NewTailoringOrderForm currency={currency} onClose={() => setShowNewOrder(false)} onCreated={async () => {
+        setShowNewOrder(false);
+        setNotice('Tailoring order created. Status: Received.');
+        await refresh();
+      }} />}
       {notice && <p role="status" className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
       {panel && (
         <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="production-panel-title" aria-busy={busy} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
@@ -1607,10 +1782,10 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
             formatDate(row.deliveryDate || row.order?.expectedDate), formatStatus(row.priority || row.order?.priority),
             row.order?.items ? formatMoney(row.order.items.reduce((total, item) => total + Number(item.total || 0), 0), currency) : '-',
             formatStatus(row.status),
-            <div className="space-y-2"><div>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</div>{!terminal && knownActive && <button disabled={busy || !!panel} onClick={() => openPanel(row, { kind: 'staff', title: row.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{row.staffId ? 'Change / Unassign' : 'Assign Staff'}</button>}</div>,
+            <div className="space-y-2"><div>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</div>{!terminal && knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'staff', title: row.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{row.staffId ? 'Change / Unassign' : 'Assign Staff'}</button>}</div>,
             <div className="flex flex-wrap gap-2 max-w-sm min-w-48">
-              {actions(row).map(action => <button key={action.title} disabled={busy || !!panel} onClick={() => openPanel(row, action)} className={buttonClass}>{action.title}</button>)}
-              {knownActive && <button disabled={busy || !!panel} onClick={() => openPanel(row, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className={`${buttonClass} text-red-600`}>Cancel</button>}
+              {actions(row).map(action => <button key={action.title} disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, action)} className={buttonClass}>{action.title}</button>)}
+              {knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className={`${buttonClass} text-red-600`}>Cancel</button>}
               {terminal && <span className="text-slate-400">No workflow actions</span>}
             </div>,
           ];
