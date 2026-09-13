@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { env } from './config/env.js';
 import authRoutes from './routes/auth.js';
 import tailoringWorkflowRoutes from './routes/tailoringWorkflow.js';
+import tailoringMeasurementRoutes from './routes/tailoringMeasurements.js';
 import { authMiddleware } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { auditLog } from './middleware/audit.js';
@@ -2118,6 +2119,7 @@ app.post(
     }
   },
 );
+app.use('/api/v1/tailoring/orders', tailoringMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringWorkflowRoutes);
 
 /* =========================================================
