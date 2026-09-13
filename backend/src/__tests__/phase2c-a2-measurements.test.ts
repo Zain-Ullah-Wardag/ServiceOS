@@ -196,6 +196,13 @@ describe('Phase 2C-A2.2 real PostgreSQL order-aware measurements', () => {
   });
   it('creates a snapshot and atomically synchronizes all records and audit', async () => {
     const row = await fixture({ services: [secondTemplateId] });
+    // Production needs parent items/services and their totals, not a direct service relation.
+    const listing = await request(app).get('/api/v1/tailoring/orders').set('Authorization', `Bearer ${token}`);
+    expect(listing.status).toBe(200);
+    const listed = listing.body.data.find((item: { id: string }) => item.id === row.id);
+    expect(listed.order.items).toHaveLength(1);
+    expect(listed.order.items[0].service.name).toBe('Tailoring');
+    expect(Number(listed.order.items[0].total)).toBe(100);
     const fields = { chest: 40, waist: 36, custom: 0 };
     const response = await post(row.id, { templateId: secondTemplateId, fields });
     expect(response.status).toBe(201);

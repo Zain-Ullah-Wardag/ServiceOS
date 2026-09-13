@@ -1960,7 +1960,9 @@ app.get(
         },
 
         include: {
-          order: true,
+          order: {
+            include: { items: { include: { service: true } } },
+          },
           customer: true,
           garment: true,
 

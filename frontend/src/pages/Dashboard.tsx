@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import OrderWizard from './OrderWizard';
 
 import {
@@ -584,6 +584,7 @@ export default function Dashboard() {
 
           {activeSection === 'production' && (
             <ProductionModule
+              currency={tenant?.currency || 'PKR'}
               rows={sectionData}
               loading={loading}
               error={sectionError}
@@ -1220,20 +1221,23 @@ function MeasurementsModule({
   return (
     <ModuleWrapper
       title="Measurements"
-      description="Tailoring measurements per customer."
+      description="All customer measurements, including order-linked and legacy/manual records."
       loading={loading}
       error={error}
       refresh={refresh}
       count={rows.length}
     >
+      <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600">
+        For order-linked tailoring measurements, open a confirmed order in <Link to="/dashboard/production" className="text-brand-700 font-semibold underline">Production</Link>. The manual form below uses the legacy standalone measurement flow and does not advance an order.
+      </div>
       <div className="flex justify-end mb-4">
         <button onClick={() => { setShowForm(!showForm); if (showForm) setFormErrors({}); }} className="flex items-center gap-2 px-4 py-2 bg-brand-900 text-white rounded-xl text-sm font-medium hover:bg-brand-800 transition">
-          {showForm ? 'Cancel' : 'New Measurement'}
+          {showForm ? 'Cancel' : 'New Manual Measurement'}
         </button>
       </div>
       {showForm && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-6 shadow-sm">
-          <h3 className="font-serif text-xl mb-4">New Measurement</h3>
+          <h3 className="font-serif text-xl mb-4">New Manual Measurement (Legacy)</h3>
           <div className="grid md:grid-cols-2 gap-3 mb-3">
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">Customer</label>
@@ -1356,43 +1360,261 @@ function GarmentsModule({
    PRODUCTION
 ========================================================= */
 
-function ProductionModule({
-  rows,
-  loading,
-  error,
-  refresh,
-}: any) {
+type ProductionOrder = {
+  id: string;
+  status: string;
+  staffId?: string | null;
+  deliveryDate?: string | null;
+  priority?: string;
+  notes?: string | null;
+  customer?: { name: string };
+  garment?: { name: string } | null;
+  staff?: { user?: { name: string }; status?: string } | null;
+  order?: {
+    orderNumber: string;
+    expectedDate?: string | null;
+    priority?: string;
+    notes?: string | null;
+    items?: { total: string | number; service?: { name: string } }[];
+  };
+};
+
+type ProductionTemplate = {
+  source: 'garment' | 'service' | 'fallback';
+  template: { id: string; name: string; defaultUnit: string };
+  fields: { id: string; name: string; label: string; unit?: string | null; section?: string | null; required: boolean; sortOrder: number }[];
+};
+
+type ProductionAction = {
+  kind: 'confirm' | 'staff' | 'measurement' | 'status' | 'qc';
+  title: string;
+  status?: string;
+  returnTo?: 'stitching' | 'finishing';
+};
+
+function ProductionModule({ rows, loading, error, refresh, currency }: {
+  rows: ProductionOrder[];
+  loading: boolean;
+  error: string;
+  refresh: () => Promise<void>;
+  currency: string;
+}) {
+  const [panel, setPanel] = useState<{ row: ProductionOrder; action: ProductionAction } | null>(null);
+  const [template, setTemplate] = useState<ProductionTemplate | null>(null);
+  const [staff, setStaff] = useState<{ id: string; user?: { name: string }; jobTitle: string; status: string }[]>([]);
+  const [staffId, setStaffId] = useState('');
+  const [deliveryDate, setDeliveryDate] = useState('');
+  const [priority, setPriority] = useState('normal');
+  const [notes, setNotes] = useState('');
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [actionError, setActionError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [preparing, setPreparing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const requestLock = useRef(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const busy = preparing || saving;
+
+  useEffect(() => { if (panel) panelRef.current?.focus(); }, [panel]);
+
+  function closePanel() {
+    if (requestLock.current) return;
+    setPanel(null);
+    setTemplate(null);
+    setValues({});
+    setActionError('');
+    setNotes('');
+  }
+
+  async function openPanel(row: ProductionOrder, action: ProductionAction) {
+    if (requestLock.current) return;
+    requestLock.current = true;
+    setPanel({ row, action });
+    setNotice('');
+    setActionError('');
+    setTemplate(null);
+    setValues({});
+    setStaff([]);
+    setStaffId(row.staffId || '');
+    setDeliveryDate((row.deliveryDate || row.order?.expectedDate || '').slice(0, 10));
+    setPriority(row.priority || row.order?.priority || 'normal');
+    setNotes(action.kind === 'confirm' ? row.notes ?? row.order?.notes ?? '' : '');
+    setPreparing(true);
+    try {
+      if (action.kind === 'measurement') {
+        const response = await api(`/tailoring/orders/${row.id}/measurement-template`);
+        if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement template.');
+        setTemplate(response.data);
+      } else if (action.kind === 'staff') {
+        const response = await api('/staff');
+        if (!response?.success) throw new Error(response?.error?.message || 'Unable to load staff.');
+        setStaff((response.data || []).filter((person: { status: string }) => person.status === 'active'));
+      }
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Unable to prepare this action.');
+    } finally {
+      requestLock.current = false;
+      setPreparing(false);
+    }
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!panel || requestLock.current) return;
+    const { row, action } = panel;
+    setActionError('');
+    let endpoint: string = action.kind;
+    let method = 'PATCH';
+    let body: Record<string, unknown>;
+    if (action.kind === 'measurement') {
+      if (!template) return;
+      const fields: Record<string, number> = {};
+      for (const field of template.fields) {
+        const raw = (values[field.name] ?? '').trim();
+        if (!raw) {
+          if (field.required) { setActionError(`${field.label || field.name} is required.`); return; }
+          continue; // Empty optional inputs must not become zero.
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value)) { setActionError(`${field.label || field.name} must be a finite number.`); return; }
+        fields[field.name] = value;
+      }
+      endpoint = 'measurements';
+      method = 'POST';
+      body = { fields };
+    } else if (action.kind === 'confirm') {
+      if (!deliveryDate && !row.deliveryDate && !row.order?.expectedDate) {
+        setActionError('Delivery date is required.'); return;
+      }
+      body = { deliveryDate: deliveryDate || undefined, priority, notes };
+    } else if (action.kind === 'staff') {
+      if (staffId && !staff.some(person => person.id === staffId)) {
+        setActionError('Choose active staff or Unassigned.'); return;
+      }
+      body = { staffId: staffId || null };
+    } else if (action.kind === 'qc') {
+      method = 'POST';
+      body = { result: action.returnTo ? 'rework' : 'pass', returnTo: action.returnTo, notes: notes || undefined };
+    } else {
+      body = { status: action.status, notes: notes || undefined };
+    }
+    requestLock.current = true;
+    setSaving(true);
+    try {
+      const response = await api(`/tailoring/orders/${row.id}/${endpoint}`, { method, body: JSON.stringify(body) });
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to save this action.');
+      setPanel(null);
+      setTemplate(null);
+      setValues({});
+      setNotes('');
+      setNotice(action.kind === 'measurement' ? 'Measurement saved. Order moved to Measurement.' : 'Order updated.');
+      // Measurements are fetched afresh when that dashboard section is opened.
+      // The measurement endpoint already advances status; do not PATCH it again.
+      await refresh();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Unable to save this action.');
+    } finally {
+      requestLock.current = false;
+      setSaving(false);
+    }
+  }
+
+  function actions(row: ProductionOrder): ProductionAction[] {
+    switch (row.status) {
+      case 'received': return [{ kind: 'confirm', title: 'Confirm' }];
+      case 'confirmed': return [{ kind: 'measurement', title: 'Take Measurement' }];
+      case 'measurement': return row.staffId ? [{ kind: 'status', title: 'Start Cutting', status: 'cutting' }] : [];
+      case 'cutting': return [{ kind: 'status', title: 'Move to Stitching', status: 'stitching' }];
+      case 'stitching': return [{ kind: 'status', title: 'Move to Finishing', status: 'finishing' }];
+      case 'finishing': return [{ kind: 'status', title: 'Send to Quality Check', status: 'quality_check' }];
+      case 'quality_check': return [
+        { kind: 'qc', title: 'QC Pass' },
+        { kind: 'qc', title: 'Send Back to Stitching', returnTo: 'stitching' },
+        { kind: 'qc', title: 'Send Back to Finishing', returnTo: 'finishing' },
+      ];
+      case 'ready': return [{ kind: 'status', title: 'Mark Delivered', status: 'delivered' }];
+      default: return [];
+    }
+  }
+
+  // Keep backend ordering, including when sections are interleaved in sortOrder.
+  const groups: { section: string; fields: ProductionTemplate['fields'] }[] = [];
+  for (const field of [...(template?.fields || [])].sort((a, b) => a.sortOrder - b.sortOrder)) {
+    const section = field.section || 'Measurements';
+    if (groups[groups.length - 1]?.section !== section) groups.push({ section, fields: [] });
+    groups[groups.length - 1].fields.push(field);
+  }
+  const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm';
+  const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-brand-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
+
   return (
-    <ModuleWrapper
-      title="Production"
-      description="Tailoring production workflow."
-      loading={loading}
-      error={error}
-      refresh={refresh}
-      count={rows.length}
-    >
-      <DataTable
-        headers={[
-          'Order',
-          'Customer',
-          'Garment',
-          'Staff',
-          'Status',
-        ]}
-        rows={rows.map((row: any) => [
-          row.order?.orderNumber ||
-            '-',
-
-          row.customer?.name ||
-            '-',
-
-          row.garment?.name || '-',
-
-          row.staff?.user?.name ||
-            '-',
-
-          formatStatus(row.status),
-        ])}
+    <ModuleWrapper title="Production" description="Confirm, measure and track tailoring orders through delivery." loading={loading} error={error} refresh={() => { if (!requestLock.current) void refresh(); }} count={rows.length}>
+      {notice && <p role="status" className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
+      {panel && (
+        <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="production-panel-title" aria-busy={busy} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
+          <div className="flex justify-between items-start gap-4 mb-4">
+            <div><h3 id="production-panel-title" className="font-serif text-xl">{panel.action.title}</h3><p className="text-sm text-slate-500">{panel.row.order?.orderNumber} · {panel.row.customer?.name} {panel.row.garment ? `· ${panel.row.garment.name}` : ''}</p></div>
+            <button type="button" onClick={closePanel} disabled={busy} aria-label="Close action panel" className={buttonClass}><X size={16} /></button>
+          </div>
+          {preparing && <p role="status" className="text-sm text-slate-500">Loading {panel.action.kind === 'measurement' ? 'measurement template' : 'staff'}…</p>}
+          {actionError && <p role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{actionError}</p>}
+          {!preparing && (
+            <form onSubmit={submit} className="space-y-4">
+              <fieldset disabled={busy} className="space-y-4">
+                {panel.action.kind === 'confirm' && <div className="grid sm:grid-cols-2 gap-4">
+                  <label className="text-sm font-medium">Delivery Date<input type="date" value={deliveryDate} required={!panel.row.deliveryDate && !panel.row.order?.expectedDate} onChange={e => setDeliveryDate(e.target.value)} className={`${inputClass} mt-1`} /></label>
+                  <label className="text-sm font-medium">Priority<select value={priority} onChange={e => setPriority(e.target.value)} className={`${inputClass} mt-1`}>{['low', 'normal', 'high', 'urgent'].map(value => <option key={value} value={value}>{formatStatus(value)}</option>)}</select></label>
+                </div>}
+                {panel.action.kind === 'staff' && <div>
+                  <label className="text-sm font-medium">Assigned Staff<select value={staffId} onChange={e => setStaffId(e.target.value)} className={`${inputClass} mt-1`}>
+                    <option value="">Unassigned</option>
+                    {panel.row.staffId && !staff.some(person => person.id === panel.row.staffId) && <option value={panel.row.staffId} disabled>Current assignment unavailable — choose active staff or unassign</option>}
+                    {staff.map(person => <option key={person.id} value={person.id}>{person.user?.name || person.jobTitle} · {person.jobTitle}</option>)}
+                  </select></label>
+                  {!staff.length && <p className="text-sm text-slate-500 mt-2">No active staff available. Manage staff in the Staff section.</p>}
+                </div>}
+                {panel.action.kind === 'measurement' && template && <>
+                  <div className="bg-slate-50 rounded-xl p-4"><h4 className="font-semibold">{template.template.name}</h4><p className="text-sm text-slate-500">Unit: {template.template.defaultUnit} · Template source: {formatStatus(template.source)}</p></div>
+                  {groups.map((group, index) => <fieldset key={`${group.section}-${index}`} className="border border-slate-200 rounded-xl p-4">
+                    <legend className="px-2 font-semibold text-sm">{group.section}</legend>
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{group.fields.map(field => <label key={field.id} className="text-sm font-medium">
+                      {field.label || field.name} ({field.unit || template.template.defaultUnit}){field.required ? ' *' : ' (optional)'}
+                      <input type="number" step="any" required={field.required} value={values[field.name] ?? ''} onChange={e => setValues(previous => ({ ...previous, [field.name]: e.target.value }))} className={`${inputClass} mt-1`} />
+                    </label>)}</div>
+                  </fieldset>)}
+                  {!template.fields.length && <p className="text-sm text-slate-500">This template has no measurement fields configured.</p>}
+                </>}
+                {panel.action.kind === 'status' && <p className="text-sm text-slate-600">{panel.action.status === 'cancelled' ? 'Cancel this order? Cancellation is terminal and cannot be undone.' : `Move this order from ${formatStatus(panel.row.status)} to ${formatStatus(panel.action.status)}?`}</p>}
+                {panel.action.kind === 'qc' && <p className="text-sm text-slate-600">{panel.action.returnTo ? `Return this order to ${formatStatus(panel.action.returnTo)} for rework.` : 'Pass quality check and mark this order Ready. Delivery is recorded separately.'}</p>}
+                {['confirm', 'status', 'qc'].includes(panel.action.kind) && <label className="block text-sm font-medium">Notes (optional)<textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={`${inputClass} mt-1`} /></label>}
+              </fieldset>
+              <div className="flex flex-wrap gap-2">
+                <button type="submit" disabled={busy || (panel.action.kind === 'measurement' && !template)} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Saving…' : panel.action.kind === 'measurement' ? 'Save Measurement' : panel.action.kind === 'staff' ? 'Save Assignment' : panel.action.title}</button>
+                {actionError && ['staff', 'measurement'].includes(panel.action.kind) && <button type="button" disabled={busy} onClick={() => openPanel(panel.row, panel.action)} className={buttonClass}>Reload {panel.action.kind === 'measurement' ? 'Template' : 'Staff'}</button>}
+                <button type="button" disabled={busy} onClick={closePanel} className={buttonClass}>Close</button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+      <DataTable headers={['Order', 'Customer', 'Service', 'Expected Date', 'Priority', 'Total', 'Status', 'Assigned Staff', 'Actions']}
+        rows={rows.map(row => {
+          const terminal = ['delivered', 'cancelled'].includes(row.status);
+          const knownActive = ['received', 'confirmed', 'measurement', 'cutting', 'stitching', 'finishing', 'quality_check', 'ready'].includes(row.status);
+          return [
+            row.order?.orderNumber || '-', row.customer?.name || '-',
+            row.order?.items?.map(item => item.service?.name).filter(Boolean).join(', ') || '-',
+            formatDate(row.deliveryDate || row.order?.expectedDate), formatStatus(row.priority || row.order?.priority),
+            row.order?.items ? formatMoney(row.order.items.reduce((total, item) => total + Number(item.total || 0), 0), currency) : '-',
+            formatStatus(row.status),
+            <div className="space-y-2"><div>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</div>{!terminal && knownActive && <button disabled={busy || !!panel} onClick={() => openPanel(row, { kind: 'staff', title: row.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{row.staffId ? 'Change / Unassign' : 'Assign Staff'}</button>}</div>,
+            <div className="flex flex-wrap gap-2 max-w-sm min-w-48">
+              {actions(row).map(action => <button key={action.title} disabled={busy || !!panel} onClick={() => openPanel(row, action)} className={buttonClass}>{action.title}</button>)}
+              {knownActive && <button disabled={busy || !!panel} onClick={() => openPanel(row, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className={`${buttonClass} text-red-600`}>Cancel</button>}
+              {terminal && <span className="text-slate-400">No workflow actions</span>}
+            </div>,
+          ];
+        })}
       />
     </ModuleWrapper>
   );
