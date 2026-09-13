@@ -168,7 +168,16 @@ describe('Phase 2C-A2.1 real PostgreSQL workflow', () => {
     const row = await fixture();
     for (const body of [{}, { staffId: '' }, { staffId: inactiveStaffId }, { staffId: foreignStaffId }, { staffId: randomUUID() }]) expect((await patch(row.id, 'staff', body)).status).toBe(400);
     expect((await patch(row.id, 'staff', { staffId: null })).body.data.staffId).toBeNull();
+    expect(await prisma.auditLog.findMany({ where: { tenantId, entityId: row.id } })).toEqual([
+      expect.objectContaining({ action: 'TAILORING_STAFF_UNASSIGNED', userId, entity: 'TailoringOrder' }),
+    ]);
     expect((await patch(row.id, 'staff', { staffId })).body.data.staffId).toBe(staffId);
+    const audits = await prisma.auditLog.findMany({ where: { tenantId, entityId: row.id } });
+    expect(audits).toHaveLength(2);
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'TAILORING_STAFF_UNASSIGNED', userId, entity: 'TailoringOrder' }),
+      expect.objectContaining({ action: 'TAILORING_STAFF_ASSIGNED', userId, entity: 'TailoringOrder' }),
+    ]));
     await synchronized(row.id, 'received', 0);
   });
 

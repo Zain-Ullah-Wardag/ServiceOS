@@ -111,7 +111,7 @@ function workflow(action: 'status' | 'confirm' | 'staff' | 'qc'): RequestHandler
       });
       const auditAction = action === 'status' ? 'TAILORING_STATUS_CHANGED'
         : action === 'confirm' ? 'TAILORING_ORDER_CONFIRMED'
-        : action === 'staff' ? 'TAILORING_STAFF_ASSIGNED'
+        : action === 'staff' ? (req.body.staffId === null ? 'TAILORING_STAFF_UNASSIGNED' : 'TAILORING_STAFF_ASSIGNED')
         : req.body.result === 'pass' ? 'TAILORING_QC_PASSED' : 'TAILORING_QC_REWORK';
       await auditLog({ tenantId, userId: req.user!.id, action: auditAction, entity: 'TailoringOrder', entityId: data.id });
       return res.json({ success: true, data });
