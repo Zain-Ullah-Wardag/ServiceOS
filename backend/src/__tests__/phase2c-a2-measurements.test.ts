@@ -363,9 +363,9 @@ describe('Phase 2C-A2.2 real PostgreSQL order-aware measurements', () => {
       const foreignService = await prisma.service.create({ data: { tenantId: foreignTenantId, name: 'Foreign service', price: 100 } });
       const before = await counts();
       const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: foreignService.id, unitPrice: 100 }] });
-      // Existing route errors remain unchanged; this phase repairs only its validator.
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(400);
       expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe('INVALID_SERVICE');
       expect(response.body.error.message).toContain('Invalid service');
       expect(await counts()).toEqual(before);
     });
@@ -375,16 +375,29 @@ describe('Phase 2C-A2.2 real PostgreSQL order-aware measurements', () => {
       await prisma.garment.update({ where: { id: garment.id }, data: mismatch === 'customer' ? { customerId: otherCustomerId } : { tenantId: foreignTenantId } });
       const before = await counts();
       const response = await create({ customerId, garmentId: garment.id, items: [{ serviceId: service.id, quantity: 2, unitPrice: 100 }] });
+      expect(response.status).toBe(400);
+      expect(response.body.success).toBe(false);
+      expect(response.body.error.code).toBe(mismatch === 'customer' ? 'GARMENT_CUSTOMER_MISMATCH' : 'INVALID_GARMENT');
+      expect(response.body.error.message).toBe(mismatch === 'customer' ? 'Garment customer mismatch' : 'Invalid garment');
+      expect(await counts()).toEqual(before);
+    });
+
+    it('keeps unexpected Prisma failures as 500 SERVER_ERROR', async () => {
+      // A second tailoring order for the same parent violates the database unique constraint.
+      const existing = await fixture({ status: 'received' });
+      const before = await counts();
+      const response = await create({ orderId: existing.orderId, customerId, garmentId: existing.garmentId });
       expect(response.status).toBe(500);
       expect(response.body.success).toBe(false);
-      expect(response.body.error.message).toBe(mismatch === 'customer' ? 'Garment customer mismatch' : 'Invalid garment');
+      expect(response.body.error.code).toBe('SERVER_ERROR');
       expect(await counts()).toEqual(before);
     });
 
     it('still requires items when creating a parent order', async () => {
       const before = await counts();
       const response = await create({ customerId });
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('ITEMS_REQUIRED');
       expect(response.body.error.message).toBe('items required');
       expect(await counts()).toEqual(before);
     });

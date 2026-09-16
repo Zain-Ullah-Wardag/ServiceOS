@@ -2001,6 +2001,16 @@ app.get(
   },
 );
 
+// Only explicitly identified business errors from order creation become HTTP 400.
+class TailoringOrderInputError extends Error {
+  readonly status = 400;
+
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'TailoringOrderInputError';
+  }
+}
+
 app.post(
   '/api/v1/tailoring/orders',
   authMiddleware,
@@ -2025,12 +2035,12 @@ app.post(
         let resolvedOrderId = orderId;
 
         if (!resolvedOrderId) {
-          if (!customerId) throw new Error('customerId required');
-          if (!items || !Array.isArray(items) || items.length === 0) throw new Error('items required');
+          if (!customerId) throw new TailoringOrderInputError('CUSTOMER_REQUIRED', 'customerId required');
+          if (!items || !Array.isArray(items) || items.length === 0) throw new TailoringOrderInputError('ITEMS_REQUIRED', 'items required');
           for (const it of items) {
             if (it.serviceId) {
               const svc = await tx.service.findFirst({ where: { id: it.serviceId, tenantId: req.tenantId! } });
-              if (!svc) throw new Error('Invalid service: ' + it.serviceId);
+              if (!svc) throw new TailoringOrderInputError('INVALID_SERVICE', 'Invalid service: ' + it.serviceId);
             }
           }
           const number =
@@ -2070,27 +2080,27 @@ app.post(
           resolvedOrderId = order.id;
         } else {
           const order = await tx.order.findFirst({ where: { id: orderId, tenantId: req.tenantId! } });
-          if (!order) throw new Error('Invalid order: ' + orderId);
+          if (!order) throw new TailoringOrderInputError('INVALID_ORDER', 'Invalid order: ' + orderId);
         }
 
         const customer = await tx.customer.findFirst({ where: { id: customerId, tenantId: req.tenantId! } });
-        if (!customer) throw new Error('Invalid customer');
+        if (!customer) throw new TailoringOrderInputError('INVALID_CUSTOMER', 'Invalid customer');
 
         if (garmentId) {
           const garment = await tx.garment.findFirst({ where: { id: garmentId, tenantId: req.tenantId! } });
-          if (!garment) throw new Error('Invalid garment');
-          if (garment.customerId && garment.customerId !== customerId) throw new Error('Garment customer mismatch');
+          if (!garment) throw new TailoringOrderInputError('INVALID_GARMENT', 'Invalid garment');
+          if (garment.customerId && garment.customerId !== customerId) throw new TailoringOrderInputError('GARMENT_CUSTOMER_MISMATCH', 'Garment customer mismatch');
         }
 
         if (staffId) {
           const staff = await tx.staff.findFirst({ where: { id: staffId, tenantId: req.tenantId! } });
-          if (!staff) throw new Error('Invalid staff');
+          if (!staff) throw new TailoringOrderInputError('INVALID_STAFF', 'Invalid staff');
         }
 
         if (measurementId) {
           const measurement = await tx.measurement.findFirst({ where: { id: measurementId, tenantId: req.tenantId! } });
-          if (!measurement) throw new Error('Invalid measurement');
-          if (measurement.customerId && measurement.customerId !== customerId) throw new Error('Measurement customer mismatch');
+          if (!measurement) throw new TailoringOrderInputError('INVALID_MEASUREMENT', 'Invalid measurement');
+          if (measurement.customerId && measurement.customerId !== customerId) throw new TailoringOrderInputError('MEASUREMENT_CUSTOMER_MISMATCH', 'Measurement customer mismatch');
         }
 
         const tailoringOrder = await tx.tailoringOrder.create({
@@ -2113,6 +2123,12 @@ app.post(
 
       return res.status(201).json({ success: true, data: result });
     } catch (error) {
+      if (error instanceof TailoringOrderInputError) {
+        return res.status(error.status).json({
+          success: false,
+          error: { code: error.code, message: error.message },
+        });
+      }
       console.error('TAILORING ORDER ATOMIC ERROR:', error);
       return res.status(500).json({
         success: false,

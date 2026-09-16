@@ -212,6 +212,7 @@ describe('Phase 2B Admin Operations Real Integration', () => {
       items: [{ serviceId: svcRes.body.data.id, quantity: 1, price: 100 }],
     });
     expect(fail.status).toBe(400);
+    expect(fail.body.error.code).toBe('INVALID_CUSTOMER');
     const after = await prisma.tailoringOrder.count();
     expect(after).toBe(before);
   });
@@ -236,6 +237,7 @@ describe('Phase 2B Admin Operations Real Integration', () => {
       items: [{ serviceId: (await prisma.service.create({ data: { tenantId: tenantAId, name: 'S', price: 100, duration: 30, status: 'active' } })).id, quantity: 1, price: 100 }],
     });
     expect(fail.status).toBe(400);
+    expect(fail.body.error.code).toBe('MEASUREMENT_CUSTOMER_MISMATCH');
     const after = await prisma.tailoringOrder.count();
     expect(after).toBe(before);
   });
