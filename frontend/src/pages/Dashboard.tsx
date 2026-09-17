@@ -34,6 +34,8 @@ import {
 import { api } from '../lib/api';
 import { LatestRequestGate } from '../lib/latestRequest';
 import WorkflowDrawer from '../components/WorkflowDrawer';
+import IntakeCustomerGarment from '../components/IntakeCustomerGarment';
+import { createdRecord, intakeLineTotal, intakeOrderPayload, type IntakeCustomer, type IntakeGarment } from '../lib/intake';
 import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionStages, type ProductionFilters } from '../lib/productionView';
 
 /* =========================================================
@@ -1421,12 +1423,13 @@ type NewTailoringItem = { key: number; serviceId: string; quantity: string; unit
 function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
   currency: string;
   onClose: () => void;
-  onCreated: () => Promise<void>;
+  onCreated: (id: string) => Promise<void>;
   onBusyChange: (busy: boolean) => void;
 }) {
-  const [customers, setCustomers] = useState<{ id: string; name: string; status?: string | null }[]>([]);
+  const [customers, setCustomers] = useState<IntakeCustomer[]>([]);
   const [services, setServices] = useState<{ id: string; name: string; price: string | number; status?: string | null }[]>([]);
-  const [garments, setGarments] = useState<{ id: string; name: string; customerId: string }[]>([]);
+  const [garments, setGarments] = useState<IntakeGarment[]>([]);
+  const [intakeSaving, setIntakeSaving] = useState(false);
   const [customerId, setCustomerId] = useState('');
   const [garmentId, setGarmentId] = useState('');
   const [items, setItems] = useState<NewTailoringItem[]>([{ key: 0, serviceId: '', quantity: '1', unitPrice: '' }]);
@@ -1441,6 +1444,8 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
   const nextKey = useRef(1);
   const saveLock = useRef(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (submitError) errorRef.current?.focus(); }, [submitError]);
 
   useEffect(() => { panelRef.current?.focus(); }, []);
   useEffect(() => {
@@ -1449,15 +1454,11 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
       setLoading(true);
       setLoadError('');
       try {
-        const responses = await Promise.all(['/customers', '/services', '/tailoring/garments'].map(path => api(path, { signal: controller.signal })));
+        const response = await api('/services', { signal: controller.signal });
         if (controller.signal.aborted) return;
-        for (const response of responses) {
-          if (!response?.success || !Array.isArray(response.data)) throw new Error(response?.error?.message || 'Unable to load order form data.');
-        }
+        if (!response?.success || !Array.isArray(response.data)) throw new Error(response?.error?.message || 'Unable to load services.');
         const active = (row: { status?: string | null }) => !row.status || row.status === 'active';
-        setCustomers(responses[0].data.filter(active));
-        setServices(responses[1].data.filter(active));
-        setGarments(responses[2].data);
+        setServices(response.data.filter(active));
       } catch (e) {
         if (!controller.signal.aborted) setLoadError(e instanceof Error ? e.message : 'Unable to load order form data.');
       } finally {
@@ -1469,28 +1470,16 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
   }, [loadAttempt]);
 
   const customerGarments = garments.filter(garment => garment.customerId === customerId);
-  function selectCustomer(id: string) {
-    setCustomerId(id);
-    setGarmentId(''); // Never retain a garment selected for another customer.
-    const matches = garments.filter(garment => garment.customerId === id);
-    if (id && matches.length === 1) setGarmentId(matches[0].id);
-    setSubmitError('');
-  }
   function updateItem(key: number, change: Partial<NewTailoringItem>) {
     setItems(previous => previous.map(item => item.key === key ? { ...item, ...change } : item));
   }
-  function lineTotal(item: NewTailoringItem): number | null {
-    const quantity = Number(item.quantity);
-    const unitPrice = Number(item.unitPrice);
-    const total = quantity * unitPrice;
-    return item.serviceId && item.quantity.trim() && item.unitPrice.trim() && Number.isInteger(quantity) && quantity > 0 && unitPrice >= 0 && Number.isFinite(total) ? total : null;
-  }
+  const lineTotal = intakeLineTotal;
   const totals = items.map(lineTotal);
   const total = totals.every(value => value !== null) ? totals.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (saveLock.current || loading || loadError) return;
+    if (saveLock.current || intakeSaving || loading || loadError) return;
     setSubmitError('');
     if (!customers.some(customer => customer.id === customerId)) { setSubmitError('Select a customer.'); return; }
     if (!customerGarments.some(garment => garment.id === garmentId)) { setSubmitError('Select a garment belonging to this customer.'); return; }
@@ -1505,15 +1494,10 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
     setSaving(true);
     onBusyChange(true);
     try {
-      const response = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify({
-        customerId, garmentId, priority,
-        deliveryDate: deliveryDate || undefined,
-        notes: notes || undefined,
-        items: items.map(item => ({ serviceId: item.serviceId, quantity: Number(item.quantity), unitPrice: Number(item.unitPrice) })),
-      }) });
-      if (!response?.success) throw new Error(response?.error?.message || 'Unable to create tailoring order.');
-      // Parent closes/unmounts the form, clearing all state before refreshing.
-      await onCreated();
+      const response = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify(intakeOrderPayload({ customerId, garmentId, priority, deliveryDate, notes, items })) });
+      const saved = createdRecord<{ id: string }>(response);
+      // Stay in this drawer; resolve the new order from the authoritative list refresh.
+      await onCreated(saved.id);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'Unable to create tailoring order.');
     } finally {
@@ -1527,28 +1511,17 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
   const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed';
   return (
     <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="new-tailoring-title" aria-busy={loading || saving} className="min-w-0 outline-none">
-      <p id="new-tailoring-title" className="mb-6 text-sm text-slate-500">Four simple sections, one submission. Your new order starts in Received.</p>
-      {loading && <p role="status" className="text-sm text-slate-500">Loading customers, services and garments…</p>}
+      <p id="new-tailoring-title" className="mb-6 text-sm text-slate-500">Find or register your customer, add their garment, then create an order. No need to leave this drawer.</p>
+      <IntakeCustomerGarment busy={saving} onBusyChange={value => { setIntakeSaving(value); onBusyChange(value); }}
+        onCustomer={customer => { setCustomers(customer ? [customer] : []); setCustomerId(customer?.id || ''); setGarmentId(''); setGarments([]); setSubmitError(''); }}
+        onGarment={garment => { setGarments(garment ? [garment] : []); setGarmentId(garment?.id || ''); setSubmitError(''); }} />
+      {!garmentId && <div className="bg-white py-3 border-t border-slate-100"><p className="text-xs text-slate-500 mb-2">Select a customer and garment to continue to services, delivery and review.</p><button type="button" disabled={intakeSaving || saving} onClick={onClose} className={buttonClass}>Cancel intake</button></div>}
+      {loading && <p role="status" className="text-sm text-slate-500">Loading active services…</p>}
       {loadError && <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm"><p>{loadError}</p><button type="button" disabled={loading} onClick={() => setLoadAttempt(attempt => attempt + 1)} className={`${buttonClass} mt-2`}>Retry Loading</button></div>}
-      {!loading && !loadError && <form onSubmit={submit} className="space-y-4">
-        <fieldset disabled={saving} className="space-y-6">
-          <section aria-labelledby="new-order-customer-heading"><h3 id="new-order-customer-heading" className="font-semibold text-sm mb-4"><span className="text-brand-500 mr-2">01</span> Customer &amp; Garment</h3>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <div><label htmlFor="new-tailoring-customer" className="block text-sm font-medium mb-1">Customer *</label>
-              <select id="new-tailoring-customer" required value={customerId} onChange={e => selectCustomer(e.target.value)} className={inputClass}><option value="">Select customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select>
-              {!customers.length && <p className="mt-2 text-sm text-slate-500">No active customers available. Add a customer in the Customers section.</p>}
-            </div>
-            <div><label htmlFor="new-tailoring-garment" className="block text-sm font-medium mb-1">Garment *</label>
-              <select id="new-tailoring-garment" required disabled={!customerId || !customerGarments.length} value={garmentId} onChange={e => setGarmentId(e.target.value)} className={inputClass}>
-                <option value="">{customerId ? 'Select garment' : 'Select a customer first'}</option>{customerGarments.map(garment => <option key={garment.id} value={garment.id}>{garment.name}</option>)}
-              </select>
-              {customerId && !customerGarments.length && <p className="mt-2 text-sm text-slate-600">No garments found for this customer. <Link to="/dashboard/garments" className="text-brand-700 font-semibold underline">Add Garment</Link> in the Garments section, then return here to create the order.</p>}
-              {customerGarments.length === 1 && <p className="mt-2 text-xs text-slate-500">Only garment automatically selected.</p>}
-            </div>
-          </div>
-          </section>
+      {garmentId && !loading && !loadError && <form onSubmit={submit} className="space-y-4">
+        <fieldset disabled={saving || intakeSaving} className="space-y-6">
           <section aria-labelledby="new-order-services-heading" className="space-y-3 border-t border-slate-100 pt-5">
-            <h3 id="new-order-services-heading" className="font-semibold text-sm"><span className="text-brand-500 mr-2">02</span> Services</h3>
+            <h3 id="new-order-services-heading" className="font-semibold text-sm"><span className="text-brand-500 mr-2">03</span> Services</h3>
             {!services.length && <p className="text-sm text-slate-500">No active services available. Add a service in the Services section.</p>}
             {items.map((item, index) => <div key={item.key} className="grid grid-cols-2 gap-3 border-b border-slate-100 py-4 items-end">
               <div className="col-span-2 min-w-0"><label htmlFor={`new-service-${item.key}`} className="block text-sm font-medium mb-1">Service {index + 1} *</label>
@@ -1563,12 +1536,12 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
               <button type="button" aria-label={`Remove item ${index + 1}`} disabled={items.length === 1} onClick={() => setItems(previous => previous.filter(candidate => candidate.key !== item.key))} className={buttonClass}>Remove</button>
             </div>)}
             <div className="flex flex-wrap justify-between items-center gap-3">
-              <button type="button" onClick={() => setItems(previous => [...previous, { key: nextKey.current++, serviceId: '', quantity: '1', unitPrice: '' }])} className={buttonClass}>+ Add Item</button>
+              <button type="button" onClick={() => setItems(previous => [...previous, { key: nextKey.current++, serviceId: '', quantity: '1', unitPrice: '' }])} className={buttonClass}>+ Add Another Service</button>
               <p className="text-sm font-semibold">Total: <output aria-label="Order total">{total !== null && Number.isFinite(total) ? formatMoney(total, currency) : '—'}</output></p>
             </div>
             <p className="text-xs text-slate-500">Totals are recalculated by the server when the order is created.</p>
           </section>
-          <section aria-labelledby="new-order-delivery-heading" className="border-t border-slate-100 pt-5"><h3 id="new-order-delivery-heading" className="font-semibold text-sm mb-4"><span className="text-brand-500 mr-2">03</span> Delivery &amp; Priority</h3>
+          <section aria-labelledby="new-order-delivery-heading" className="border-t border-slate-100 pt-5"><h3 id="new-order-delivery-heading" className="font-semibold text-sm mb-4"><span className="text-brand-500 mr-2">04</span> Delivery &amp; Priority</h3>
           <div className="grid sm:grid-cols-2 gap-4">
             <div><label htmlFor="new-tailoring-date" className="block text-sm font-medium mb-1">Delivery Date</label><input id="new-tailoring-date" type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className={inputClass} /></div>
             <div><label htmlFor="new-tailoring-priority" className="block text-sm font-medium mb-1">Priority</label><select id="new-tailoring-priority" value={priority} onChange={e => setPriority(e.target.value)} className={inputClass}>{['low', 'normal', 'high', 'urgent'].map(value => <option key={value} value={value}>{formatStatus(value)}</option>)}</select></div>
@@ -1576,16 +1549,16 @@ function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
           <div className="mt-4"><label htmlFor="new-tailoring-notes" className="block text-sm font-medium mb-1">Notes (optional)</label><textarea id="new-tailoring-notes" rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} /></div>
           </section>
           <section aria-labelledby="new-order-review-heading" className="border-t border-slate-100 pt-5">
-            <h3 id="new-order-review-heading" className="font-semibold text-sm mb-3"><span className="text-brand-500 mr-2">04</span> Review</h3>
-            <dl className="grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-slate-500">Customer</dt><dd>{customers.find(customer => customer.id === customerId)?.name || 'Not selected'}</dd></div><div><dt className="text-xs text-slate-500">Garment</dt><dd>{customerGarments.find(garment => garment.id === garmentId)?.name || 'Not selected'}</dd></div><div><dt className="text-xs text-slate-500">Delivery</dt><dd>{deliveryDate ? formatDate(deliveryDate) : 'Set when confirming'}</dd></div><div><dt className="text-xs text-slate-500">Priority</dt><dd>{formatStatus(priority)}</dd></div></dl>
+            <h3 id="new-order-review-heading" className="font-semibold text-sm mb-3"><span className="text-brand-500 mr-2">05</span> Review</h3>
+            <dl className="grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-slate-500">Customer</dt><dd>{customers.find(customer => customer.id === customerId)?.name || 'Not selected'}<p className="text-xs text-slate-500 mt-1">{customers.find(customer => customer.id === customerId)?.phone}</p></dd></div><div><dt className="text-xs text-slate-500">Garment</dt><dd>{customerGarments.find(garment => garment.id === garmentId)?.name || 'Not selected'}<p className="text-xs text-slate-500 mt-1">Category: {customerGarments.find(garment => garment.id === garmentId)?.category || 'Not specified'}</p></dd></div><div><dt className="text-xs text-slate-500">Delivery</dt><dd>{deliveryDate ? formatDate(deliveryDate) : 'Set when confirming'}</dd></div><div><dt className="text-xs text-slate-500">Priority</dt><dd>{formatStatus(priority)}</dd></div></dl>
             <ul className="mt-4 divide-y divide-slate-100">{items.map(item => <li key={item.key} className="flex justify-between gap-4 py-2 text-sm"><span>{services.find(service => service.id === item.serviceId)?.name || 'Select a service'} × {item.quantity || '—'}</span><span className="font-medium">{lineTotal(item) === null ? '—' : formatMoney(lineTotal(item), currency)}</span></li>)}</ul>
             <div className="flex justify-between border-t border-slate-200 pt-3 text-sm font-semibold"><span>Order total</span><span>{total !== null && Number.isFinite(total) ? formatMoney(total, currency) : '—'}</span></div>
           </section>
         </fieldset>
-        {submitError && <p role="alert" className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{submitError}</p>}
-        <div className="sticky bottom-0 z-10 -mx-5 sm:-mx-6 -mb-6 px-5 sm:px-6 py-4 bg-white border-t border-slate-200 flex flex-wrap gap-2">
-          <button type="submit" disabled={saving || !customerId || !garmentId || !services.length} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Creating…' : 'Create Tailoring Order'}</button>
-          <button type="button" disabled={saving} onClick={onClose} className={buttonClass}>Cancel</button>
+        {submitError && <p ref={errorRef} tabIndex={-1} role="alert" className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{submitError}</p>}
+        <div className="sticky bottom-0 z-10 -mx-5 sm:-mx-6 px-5 sm:px-6 py-4 bg-white border-t border-slate-200 flex flex-wrap gap-2">
+          <button type="submit" disabled={saving || intakeSaving || !customerId || !garmentId || !services.length} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Creating…' : 'Create Order'}</button>
+          <button type="button" disabled={saving || intakeSaving} onClick={onClose} className={buttonClass}>Cancel</button>
         </div>
       </form>}
     </div>
@@ -1804,7 +1777,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
       <ModuleWrapper title="Production" description="A clear view of your work. Open an order to manage its next step." loading={loading} error={error} refresh={() => { if (!requestLock.current && !showNewOrder) void refresh(); }}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-sm text-slate-500">{filteredRows.length} matching orders · {rows.filter(row => row.status === 'ready').length} ready for delivery</p>
-          <button data-workflow-return-focus type="button" disabled={busy || !!selectedId || showNewOrder} onClick={() => { setNotice(''); setActionError(''); setShowNewOrder(true); }} className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-brand-900 text-white rounded-xl text-sm font-semibold hover:bg-brand-800 disabled:opacity-50"><Plus size={16} /> New Tailoring Order</button>
+          <button data-workflow-return-focus type="button" disabled={busy || !!selectedId || showNewOrder} onClick={() => { setNotice(''); setActionError(''); setShowNewOrder(true); }} className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-brand-900 text-white rounded-xl text-sm font-semibold hover:bg-brand-800 disabled:opacity-50"><Plus size={16} /> New Customer Order</button>
         </div>
         {!selectedId && !showNewOrder && notice && <p role="status" className="p-3 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
         <section aria-label="Production filters" className="space-y-4">
@@ -1850,8 +1823,8 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
           <div className="flex flex-wrap items-center gap-3"><label className="text-xs">Per page <select aria-label="Orders per page" value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }} className="ml-1 rounded-lg border border-slate-200 bg-white px-2 py-2">{[10, 20, 50].map(size => <option key={size} value={size}>{size}</option>)}</select></label><button type="button" aria-label="Previous page" disabled={pageRows.page === 1} onClick={() => setPage(pageRows.page - 1)} className={buttonClass}><ChevronLeft size={16} /></button><span className="text-xs">{pageRows.page} / {pageRows.totalPages}</span><button type="button" aria-label="Next page" disabled={pageRows.page === pageRows.totalPages} onClick={() => setPage(pageRows.page + 1)} className={buttonClass}><ChevronRight size={16} /></button></div>
         </nav>
       </ModuleWrapper>
-      <WorkflowDrawer open={!!selectedId || showNewOrder} title={showNewOrder ? 'New Tailoring Order' : panel?.action.title || selected?.order?.orderNumber || 'Order details'} subtitle={showNewOrder ? 'Create once. Follow every step in Production.' : selected ? `${selected.customer?.name || 'Customer'} · ${selected.garment?.name || 'No garment'}` : undefined} busy={busy || createSaving} onClose={closeDrawer}>
-        {showNewOrder ? <NewTailoringOrderForm currency={currency} onBusyChange={setCreateSaving} onClose={closeDrawer} onCreated={async () => { setShowNewOrder(false); setCreateSaving(false); setNotice('Tailoring order created. Status: Received.'); await refresh(); }} /> : <>
+      <WorkflowDrawer open={!!selectedId || showNewOrder} title={showNewOrder ? 'New Customer Order' : panel?.action.title || selected?.order?.orderNumber || 'Order details'} subtitle={showNewOrder ? 'Create once. Follow every step in Production.' : selected ? `${selected.customer?.name || 'Customer'} · ${selected.garment?.name || 'No garment'}` : undefined} busy={busy || createSaving} onClose={closeDrawer}>
+        {showNewOrder ? <NewTailoringOrderForm currency={currency} onBusyChange={setCreateSaving} onClose={closeDrawer} onCreated={async id => { setSelectedId(id); setShowNewOrder(false); setNotice('Order created. Review the recommended next step below.'); await refresh(); setCreateSaving(false); }} /> : <>
           {notice && <p role="status" className="mb-5 p-3 rounded-lg bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
           {loading ? <p role="status" className="py-12 text-center text-slate-500">Refreshing order from the server…</p> : error ? <div role="alert" className="space-y-3 p-4 rounded-xl bg-red-50 text-red-700"><p>{error}</p><button disabled={busy} type="button" onClick={() => void refresh()} className={buttonClass}>Retry refresh</button></div> : !selected ? <p className="py-8 text-slate-500">This order is no longer available. Close the drawer and refresh your list.</p> : panel ? (<div ref={panelRef} tabIndex={-1} role="region" aria-label={panel.action.title} aria-busy={busy} className="min-w-0 outline-none">
           <button type="button" onClick={closePanel} disabled={busy} className="inline-flex items-center gap-1 mb-5 text-sm font-medium text-brand-700 disabled:opacity-50"><ChevronLeft size={16} /> Back to order</button>
@@ -1901,9 +1874,10 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
               <div><dt className="text-xs text-slate-500 mb-1">Status</dt><dd><ProductionStatus status={selected.status} /></dd></div><div><dt className="text-xs text-slate-500 mb-1">Due date</dt><dd>{formatDate(selected.deliveryDate || selected.order?.expectedDate)}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Priority</dt><dd>{formatStatus(selected.priority || selected.order?.priority || 'normal')}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Assigned staff</dt><dd>{selected.staff?.user?.name || (selected.staffId ? 'Assigned staff' : 'Unassigned')}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Total</dt><dd className="font-semibold">{productionTotal(selected, currency)}</dd></div>
             </dl></section>
             <section aria-labelledby="order-workflow" className="border-t border-slate-100 pt-5"><h3 id="order-workflow" className="font-semibold text-sm mb-4">Workflow</h3><ProductionStepper status={selected.status} />
-              <div className="flex flex-wrap gap-2 mt-5">
+              <div className="mt-5 rounded-xl bg-brand-50 p-4"><p className="text-xs font-semibold text-brand-700 mb-3">{['delivered', 'cancelled'].includes(selected.status) ? 'Order complete · view only' : 'Recommended next step'}</p><div className="flex flex-wrap gap-2">
                 {selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'staff', title: selected.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{selected.staffId ? 'Change Staff' : 'Assign Staff'}</button>}
                 {actions(selected).map((action, index) => <button key={action.title} type="button" disabled={busy} onClick={() => openPanel(selected, action)} className={index === 0 ? 'px-4 py-2.5 rounded-lg bg-brand-900 text-white text-sm font-semibold hover:bg-brand-800 disabled:opacity-50' : buttonClass}>{action.title}</button>)}
+              </div>
               </div>
               {selected.status === 'measurement' && !selected.staffId && <p className="mt-2 text-xs text-slate-500">Assign active staff before starting Cutting.</p>}
             </section>
