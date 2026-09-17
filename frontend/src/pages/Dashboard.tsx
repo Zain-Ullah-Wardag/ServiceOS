@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 
 import { api } from '../lib/api';
+import { LatestRequestGate } from '../lib/latestRequest';
 
 /* =========================================================
    TYPES
@@ -213,6 +214,10 @@ export default function Dashboard() {
     return last;
   }, [location.pathname]);
 
+  const sectionRequests = useRef(new LatestRequestGate());
+  const activeSectionRef = useRef(activeSection);
+  activeSectionRef.current = activeSection;
+
   const currentNavItem =
     navItems.find((item) => item.key === activeSection) ||
     navItems[0];
@@ -242,10 +247,14 @@ export default function Dashboard() {
   ======================================================= */
 
   useEffect(() => {
-    loadCurrentSection();
+    void loadCurrentSection();
+    return () => sectionRequests.current.invalidate();
   }, [activeSection]);
 
   async function loadCurrentSection() {
+    // A mutation finishing after navigation must not refresh the old section.
+    if (activeSectionRef.current !== activeSection) return;
+    const request = sectionRequests.current.begin();
     try {
       setLoading(true);
       setSectionError('');
@@ -262,6 +271,7 @@ export default function Dashboard() {
             api('/orders'),
           ]);
 
+        if (!sectionRequests.current.isCurrent(request)) return;
         if (statsResponse?.success) {
           setStats(statsResponse.data || {});
         }
@@ -307,7 +317,8 @@ export default function Dashboard() {
         return;
       }
 
-      const response = await api(endpoint);
+      const response = await api(endpoint, activeSection === 'production' ? { cache: 'no-store' } : {});
+      if (!sectionRequests.current.isCurrent(request)) return;
 
       if (!response?.success) {
         throw new Error(
@@ -322,6 +333,7 @@ export default function Dashboard() {
           : [],
       );
     } catch (error) {
+      if (!sectionRequests.current.isCurrent(request)) return;
       console.error(
         `${activeSection} load error:`,
         error,
@@ -333,7 +345,7 @@ export default function Dashboard() {
           : `Unable to load ${activeSection}.`,
       );
     } finally {
-      setLoading(false);
+      if (sectionRequests.current.isCurrent(request)) setLoading(false);
     }
   }
 
@@ -1334,7 +1346,11 @@ function GarmentsModule({
           <div className="grid md:grid-cols-3 gap-3 mb-3">
             <select value={form.customerId} onChange={e=>setForm({...form,customerId:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option value="">Select customer</option>{customers.map((c:any)=><option key={c.id} value={c.id}>{c.name||c.phone||c.id}</option>)}</select>
             <input placeholder="Name *" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
-            <input placeholder="Category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
+            <label className="text-sm font-medium">Category<select aria-label="Garment category" value={form.category} onChange={e=>setForm({...form,category:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50">
+              <option value="">Select category</option>
+              {form.category && !['Kurta', 'Shalwar Kameez', '2-Piece Suit', 'Other'].includes(form.category) && <option value={form.category}>{form.category} (existing)</option>}
+              {['Kurta', 'Shalwar Kameez', '2-Piece Suit', 'Other'].map(category => <option key={category} value={category}>{category}</option>)}
+            </select></label>
             <input placeholder="Description" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 md:col-span-3" />
           </div>
           <div className="mb-3"><label className="text-sm">Status</label><select value={form.status} onChange={e=>setForm({...form,status:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"><option>pending</option><option>measured</option><option>cutting</option><option>stitching</option><option>finishing</option><option>quality_check</option><option>ready</option><option>delivered</option></select></div>
@@ -1362,6 +1378,7 @@ function GarmentsModule({
 
 type ProductionOrder = {
   id: string;
+  measurementId?: string | null;
   status: string;
   staffId?: string | null;
   deliveryDate?: string | null;
@@ -1380,13 +1397,13 @@ type ProductionOrder = {
 };
 
 type ProductionTemplate = {
-  source: 'garment' | 'service' | 'fallback';
+  source: 'garment' | 'service' | 'fallback' | 'snapshot';
   template: { id: string; name: string; defaultUnit: string };
   fields: { id: string; name: string; label: string; unit?: string | null; section?: string | null; required: boolean; sortOrder: number }[];
 };
 
 type ProductionAction = {
-  kind: 'confirm' | 'staff' | 'measurement' | 'status' | 'qc';
+  kind: 'confirm' | 'staff' | 'measurement' | 'viewMeasurement' | 'editMeasurement' | 'status' | 'qc';
   title: string;
   status?: string;
   returnTo?: 'stitching' | 'finishing';
@@ -1568,6 +1585,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const [showNewOrder, setShowNewOrder] = useState(false);
   const [panel, setPanel] = useState<{ row: ProductionOrder; action: ProductionAction } | null>(null);
   const [template, setTemplate] = useState<ProductionTemplate | null>(null);
+  const [measurementEditable, setMeasurementEditable] = useState(false);
   const [staff, setStaff] = useState<{ id: string; user?: { name: string }; jobTitle: string; status: string }[]>([]);
   const [staffId, setStaffId] = useState('');
   const [deliveryDate, setDeliveryDate] = useState('');
@@ -1600,6 +1618,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     setNotice('');
     setActionError('');
     setTemplate(null);
+    setMeasurementEditable(false);
     setValues({});
     setStaff([]);
     setStaffId(row.staffId || '');
@@ -1612,6 +1631,18 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
         const response = await api(`/tailoring/orders/${row.id}/measurement-template`);
         if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement template.');
         setTemplate(response.data);
+      } else if (action.kind === 'viewMeasurement' || action.kind === 'editMeasurement') {
+        const response = await api(`/tailoring/orders/${row.id}/measurement`, { cache: 'no-store' });
+        if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement.');
+        const data = response.data;
+        const definitions: ProductionTemplate['fields'] = data.fields || [];
+        const stored: Record<string, unknown> = data.measurement.fields || {};
+        // Preserve numeric custom keys already stored in the snapshot.
+        const custom = Object.keys(stored).filter(name => !definitions.some(field => field.name === name)).map((name, index) => ({ id: `custom-${name}`, name, label: name, required: false, sortOrder: Math.max(0, ...definitions.map(field => field.sortOrder)) + index + 1, section: 'Custom measurements' }));
+        setTemplate({ source: 'snapshot', template: { id: data.template?.id || '', name: data.template?.name || 'Legacy measurement', defaultUnit: data.measurement.unit }, fields: [...definitions, ...custom] });
+        setValues(Object.fromEntries(Object.entries(stored).map(([name, value]) => [name, value == null ? '' : String(value)])));
+        setMeasurementEditable(data.editable);
+        if (action.kind === 'editMeasurement' && !data.editable) setActionError('This measurement is locked. Editing is only available in Measurement before Cutting.');
       } else if (action.kind === 'staff') {
         const response = await api('/staff');
         if (!response?.success) throw new Error(response?.error?.message || 'Unable to load staff.');
@@ -1627,14 +1658,15 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!panel || requestLock.current) return;
+    if (!panel || requestLock.current || panel.action.kind === 'viewMeasurement') return;
     const { row, action } = panel;
     setActionError('');
     let endpoint: string = action.kind;
     let method = 'PATCH';
     let body: Record<string, unknown>;
-    if (action.kind === 'measurement') {
+    if (action.kind === 'measurement' || action.kind === 'editMeasurement') {
       if (!template) return;
+      if (action.kind === 'editMeasurement' && !measurementEditable) { setActionError('This measurement is locked.'); return; }
       const fields: Record<string, number> = {};
       for (const field of template.fields) {
         const raw = (values[field.name] ?? '').trim();
@@ -1646,8 +1678,8 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
         if (!Number.isFinite(value)) { setActionError(`${field.label || field.name} must be a finite number.`); return; }
         fields[field.name] = value;
       }
-      endpoint = 'measurements';
-      method = 'POST';
+      endpoint = action.kind === 'editMeasurement' ? 'measurement' : 'measurements';
+      method = action.kind === 'editMeasurement' ? 'PATCH' : 'POST';
       body = { fields };
     } else if (action.kind === 'confirm') {
       if (!deliveryDate && !row.deliveryDate && !row.order?.expectedDate) {
@@ -1674,7 +1706,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
       setTemplate(null);
       setValues({});
       setNotes('');
-      setNotice(action.kind === 'measurement' ? 'Measurement saved. Order moved to Measurement.' : 'Order updated.');
+      setNotice(action.kind === 'measurement' ? 'Measurement saved. Refreshing production from the server.' : action.kind === 'editMeasurement' ? 'Measurement updated.' : 'Order updated.');
       // Measurements are fetched afresh when that dashboard section is opened.
       // The measurement endpoint already advances status; do not PATCH it again.
       await refresh();
@@ -1724,6 +1756,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
         setNotice('Tailoring order created. Status: Received.');
         await refresh();
       }} />}
+      {!panel && actionError && <p role="alert" className="p-4 rounded-xl bg-red-50 text-red-700 text-sm">{actionError}</p>}
       {notice && <p role="status" className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
       {panel && (
         <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="production-panel-title" aria-busy={busy} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
@@ -1731,11 +1764,11 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
             <div><h3 id="production-panel-title" className="font-serif text-xl">{panel.action.title}</h3><p className="text-sm text-slate-500">{panel.row.order?.orderNumber} · {panel.row.customer?.name} {panel.row.garment ? `· ${panel.row.garment.name}` : ''}</p></div>
             <button type="button" onClick={closePanel} disabled={busy} aria-label="Close action panel" className={buttonClass}><X size={16} /></button>
           </div>
-          {preparing && <p role="status" className="text-sm text-slate-500">Loading {panel.action.kind === 'measurement' ? 'measurement template' : 'staff'}…</p>}
+          {preparing && <p role="status" className="text-sm text-slate-500">Loading {panel.action.kind === 'staff' ? 'staff' : 'measurement data'}…</p>}
           {actionError && <p role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{actionError}</p>}
           {!preparing && (
             <form onSubmit={submit} className="space-y-4">
-              <fieldset disabled={busy} className="space-y-4">
+              <fieldset disabled={busy || panel.action.kind === 'viewMeasurement' || (panel.action.kind === 'editMeasurement' && !measurementEditable)} className="space-y-4">
                 {panel.action.kind === 'confirm' && <div className="grid sm:grid-cols-2 gap-4">
                   <label className="text-sm font-medium">Delivery Date<input type="date" value={deliveryDate} required={!panel.row.deliveryDate && !panel.row.order?.expectedDate} onChange={e => setDeliveryDate(e.target.value)} className={`${inputClass} mt-1`} /></label>
                   <label className="text-sm font-medium">Priority<select value={priority} onChange={e => setPriority(e.target.value)} className={`${inputClass} mt-1`}>{['low', 'normal', 'high', 'urgent'].map(value => <option key={value} value={value}>{formatStatus(value)}</option>)}</select></label>
@@ -1748,13 +1781,13 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                   </select></label>
                   {!staff.length && <p className="text-sm text-slate-500 mt-2">No active staff available. Manage staff in the Staff section.</p>}
                 </div>}
-                {panel.action.kind === 'measurement' && template && <>
+                {['measurement', 'viewMeasurement', 'editMeasurement'].includes(panel.action.kind) && template && <>
                   <div className="bg-slate-50 rounded-xl p-4"><h4 className="font-semibold">{template.template.name}</h4><p className="text-sm text-slate-500">Unit: {template.template.defaultUnit} · Template source: {formatStatus(template.source)}</p></div>
                   {groups.map((group, index) => <fieldset key={`${group.section}-${index}`} className="border border-slate-200 rounded-xl p-4">
                     <legend className="px-2 font-semibold text-sm">{group.section}</legend>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{group.fields.map(field => <label key={field.id} className="text-sm font-medium">
                       {field.label || field.name} ({field.unit || template.template.defaultUnit}){field.required ? ' *' : ' (optional)'}
-                      <input type="number" step="any" required={field.required} value={values[field.name] ?? ''} onChange={e => setValues(previous => ({ ...previous, [field.name]: e.target.value }))} className={`${inputClass} mt-1`} />
+                      <input type={panel.action.kind === 'viewMeasurement' ? 'text' : 'number'} step="any" required={field.required} value={values[field.name] ?? ''} onChange={e => setValues(previous => ({ ...previous, [field.name]: e.target.value }))} className={`${inputClass} mt-1`} />
                     </label>)}</div>
                   </fieldset>)}
                   {!template.fields.length && <p className="text-sm text-slate-500">This template has no measurement fields configured.</p>}
@@ -1764,8 +1797,8 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                 {['confirm', 'status', 'qc'].includes(panel.action.kind) && <label className="block text-sm font-medium">Notes (optional)<textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={`${inputClass} mt-1`} /></label>}
               </fieldset>
               <div className="flex flex-wrap gap-2">
-                <button type="submit" disabled={busy || (panel.action.kind === 'measurement' && !template)} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Saving…' : panel.action.kind === 'measurement' ? 'Save Measurement' : panel.action.kind === 'staff' ? 'Save Assignment' : panel.action.title}</button>
-                {actionError && ['staff', 'measurement'].includes(panel.action.kind) && <button type="button" disabled={busy} onClick={() => openPanel(panel.row, panel.action)} className={buttonClass}>Reload {panel.action.kind === 'measurement' ? 'Template' : 'Staff'}</button>}
+                {panel.action.kind !== 'viewMeasurement' && <button type="submit" disabled={busy || (['measurement', 'editMeasurement'].includes(panel.action.kind) && !template) || (panel.action.kind === 'editMeasurement' && !measurementEditable)} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Saving…' : ['measurement', 'editMeasurement'].includes(panel.action.kind) ? 'Save Measurement' : panel.action.kind === 'staff' ? 'Save Assignment' : panel.action.title}</button>}
+                {actionError && ['staff', 'measurement', 'viewMeasurement', 'editMeasurement'].includes(panel.action.kind) && <button type="button" disabled={busy} onClick={() => openPanel(panel.row, panel.action)} className={buttonClass}>Reload {panel.action.kind === 'staff' ? 'Staff' : 'Measurement'}</button>}
                 <button type="button" disabled={busy} onClick={closePanel} className={buttonClass}>Close</button>
               </div>
             </form>
@@ -1781,9 +1814,12 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
             row.order?.items?.map(item => item.service?.name).filter(Boolean).join(', ') || '-',
             formatDate(row.deliveryDate || row.order?.expectedDate), formatStatus(row.priority || row.order?.priority),
             row.order?.items ? formatMoney(row.order.items.reduce((total, item) => total + Number(item.total || 0), 0), currency) : '-',
-            formatStatus(row.status),
+            <div>{formatStatus(row.status)}{row.measurementId && <div className="text-xs text-slate-500 mt-1" title={row.measurementId}>Measurement ID: {row.measurementId}</div>}</div>,
             <div className="space-y-2"><div>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</div>{!terminal && knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'staff', title: row.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{row.staffId ? 'Change / Unassign' : 'Assign Staff'}</button>}</div>,
             <div className="flex flex-wrap gap-2 max-w-sm min-w-48">
+              {row.measurementId && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'viewMeasurement', title: 'View Measurement' })} className={buttonClass}>View Measurement</button>}
+              {row.measurementId && row.status === 'measurement' && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'editMeasurement', title: 'Edit Measurement' })} className={buttonClass}>Edit Measurement</button>}
+              {row.measurementId && row.status !== 'measurement' && <span className="text-xs text-slate-500">Measurement locked</span>}
               {actions(row).map(action => <button key={action.title} disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, action)} className={buttonClass}>{action.title}</button>)}
               {knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className={`${buttonClass} text-red-600`}>Cancel</button>}
               {terminal && <span className="text-slate-400">No workflow actions</span>}
@@ -1799,6 +1835,62 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
    STAFF
 ========================================================= */
 
+function StaffOnboardingForm({ onClose, onCreated }: { onClose: () => void; onCreated: (user: { id: string; name: string; email: string }) => Promise<void> }) {
+  const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
+  const [form, setForm] = useState({ name: '', email: '', password: '', roleId: '', jobTitle: '', department: '', skills: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const lock = useRef(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true); setError('');
+    api('/staff/onboarding-roles', { signal: controller.signal }).then(response => {
+      if (!controller.signal.aborted) setRoles(response.data || []);
+    }).catch(e => { if (!controller.signal.aborted) setError(e.message || 'Unable to load roles.'); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [attempt]);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (lock.current || loading) return;
+    lock.current = true; setSaving(true); setError('');
+    try {
+      const response = await api('/staff/onboard', { method: 'POST', body: JSON.stringify(form) });
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to create staff account.');
+      setForm(previous => ({ ...previous, password: '' }));
+      await onCreated(response.data.user);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unable to create staff account.');
+      setForm(previous => ({ ...previous, password: '' }));
+    } finally { lock.current = false; setSaving(false); }
+  }
+  const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 mt-1';
+  return <form onSubmit={submit} aria-label="Create new staff user" className="bg-white rounded-2xl border border-slate-200 p-5 space-y-4">
+    <h3 className="font-serif text-xl">Create New User &amp; Staff</h3>
+    <p className="text-sm text-slate-500">Administrator access (staff.create and settings.manage) is required. Creates a new login, tenant membership and staff profile together. Existing accounts are never overwritten.</p>
+    <p className="text-sm text-slate-500">There is no email invitation service configured. Set a strong initial password and share it privately with this person over a trusted channel. It is not saved in browser storage or returned by the API.</p>
+    {loading && <p role="status">Loading assignable roles…</p>}
+    {error && <p role="alert" className="text-sm text-red-700 bg-red-50 p-3 rounded-lg">{error}</p>}
+    <fieldset disabled={loading || saving || !roles.length} className="grid md:grid-cols-2 gap-3">
+      <label className="text-sm">Name *<input required minLength={2} maxLength={100} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className={inputClass} /></label>
+      <label className="text-sm">Email *<input required type="email" autoComplete="off" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className={inputClass} /></label>
+      <label className="text-sm">Initial Password *<input required type="password" autoComplete="new-password" minLength={12} maxLength={72} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className={inputClass} /><span className="text-xs text-slate-500">At least 12 characters, at most 72 UTF-8 bytes.</span></label>
+      <label className="text-sm">Role *<select aria-label="New user role" required value={form.roleId} onChange={e => setForm({ ...form, roleId: e.target.value })} className={inputClass}><option value="">Select role</option>{roles.map(role => <option key={role.id} value={role.id}>{role.name}</option>)}</select></label>
+      <label className="text-sm">Job Title *<input required maxLength={100} value={form.jobTitle} onChange={e => setForm({ ...form, jobTitle: e.target.value })} className={inputClass} /></label>
+      <label className="text-sm">Department<input value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} className={inputClass} /></label>
+      <label className="text-sm md:col-span-2">Skills<input value={form.skills} onChange={e => setForm({ ...form, skills: e.target.value })} className={inputClass} /></label>
+    </fieldset>
+    {!loading && !roles.length && <p className="text-sm text-slate-500">No assignable roles available. Ask your tenant administrator for help.</p>}
+    <div className="flex gap-2">
+      <button type="submit" disabled={loading || saving || !roles.length} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm disabled:opacity-50">{saving ? 'Creating…' : 'Create User & Staff'}</button>
+      {!roles.length && <button type="button" disabled={loading || saving} onClick={() => setAttempt(value => value + 1)} className="px-4 py-2 rounded-lg border text-sm">Retry Roles</button>}
+      <button type="button" disabled={saving} onClick={onClose} className="px-4 py-2 rounded-lg border text-sm">Cancel</button>
+    </div>
+  </form>;
+}
+
 function StaffModule({
   rows,
   loading,
@@ -1806,12 +1898,14 @@ function StaffModule({
   refresh,
 }: any) {
   const [showForm, setShowForm] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [notice, setNotice] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState({ userId: '', jobTitle: '', department: '', skills: '', status: 'active' });
   const [users, setUsers] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string,string>>({});
-  useEffect(() => { api('/tenant-users').then(r => { if (r?.success) setUsers(r.data || []); }); }, []);
+  useEffect(() => { api('/tenant-users').then(r => { if (r?.success) setUsers(r.data || []); }).catch(e => setFormErrors({ submit: e.message || 'Unable to load users.' })); }, []);
   const resetForm = () => setForm({ userId: '', jobTitle: '', department: '', skills: '', status: 'active' });
   const handleSave = async () => {
     setFormErrors({}); setSaving(true);
@@ -1828,11 +1922,16 @@ function StaffModule({
   const handleEdit = (r: any) => { setEditId(r.id); setForm({ userId: r.user?.id || r.userId || '', jobTitle: r.jobTitle || '', department: r.department || '', skills: r.skills || '', status: r.status || 'active' }); setShowForm(true); };
   const handleDelete = async (id: string) => { if (confirm('Deactivate this staff?')) { await api(`/staff/${id}`, { method: 'DELETE' }); await refresh(); } };
   return (
-    <ModuleWrapper title="Staff" description="Business staff and assigned roles." loading={loading} error={error} refresh={refresh} count={rows.length}>
-      <div className="mb-4"><button onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Staff</button></div>
+    <ModuleWrapper title="Staff" description="Business staff and assigned roles." loading={loading} error={error} refresh={() => { if (!showOnboarding) void refresh(); }} count={rows.length}>
+      <div className="mb-4 flex gap-2 flex-wrap"><button disabled={showOnboarding} onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Staff</button><button disabled={saving || showOnboarding} onClick={() => { setShowForm(false); setShowOnboarding(true); setNotice(''); }} className="px-4 py-2 border border-brand-900 text-brand-900 rounded-xl text-sm font-medium disabled:opacity-50">+ Create New User</button></div>
+      {notice && <p role="status" className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-sm">{notice}</p>}
+      {showOnboarding && <StaffOnboardingForm onClose={() => setShowOnboarding(false)} onCreated={async user => {
+        setUsers(previous => [...previous, user]); setShowOnboarding(false); setNotice('User, tenant membership and staff profile created.'); await refresh();
+      }} />}
       {showForm && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
-          <h3 className="font-semibold mb-3">{editId ? 'Edit Staff' : 'Add Staff'}</h3>
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Staff' : 'Add Staff — Existing User'}</h3>
+          {!editId && <p className="text-sm text-slate-500 mb-3">Choose an existing tenant user below, or use Create New User to create their login and staff profile together.</p>}
           <div className="grid md:grid-cols-3 gap-3 mb-3">
             <select disabled={!!editId} value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} className={`w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 ${editId?'opacity-60':''}`}><option value="">Select user</option>{users.map((u:any)=><option key={u.id} value={u.id}>{u.name||u.email||u.id}</option>)}</select>
             <input placeholder="Job Title *" value={form.jobTitle} onChange={e=>setForm({...form,jobTitle:e.target.value})} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50" />
@@ -1850,7 +1949,7 @@ function StaffModule({
           row.jobTitle || '-',
           row.department || '-',
           formatStatus(row.status),
-          <><button onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Deactivate</button></>,
+          <><button disabled={showOnboarding} onClick={()=>handleEdit(row)} className="text-brand-700 text-xs mr-2">Edit</button><button disabled={showOnboarding} onClick={()=>handleDelete(row.id)} className="text-red-600 text-xs">Deactivate</button></>,
         ])}
       />
     </ModuleWrapper>

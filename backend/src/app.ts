@@ -9,6 +9,8 @@ import { env } from './config/env.js';
 import authRoutes from './routes/auth.js';
 import tailoringWorkflowRoutes from './routes/tailoringWorkflow.js';
 import tailoringMeasurementRoutes from './routes/tailoringMeasurements.js';
+import tailoringOrderMeasurementRoutes from './routes/tailoringOrderMeasurement.js';
+import staffOnboardingRoutes from './routes/staffOnboarding.js';
 import { authMiddleware } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { auditLog } from './middleware/audit.js';
@@ -1056,6 +1058,8 @@ app.post(
 /* =========================================================
    STAFF
 ========================================================= */
+
+app.use('/api/v1/staff', staffOnboardingRoutes);
 
 app.get(
   '/api/v1/staff',
@@ -2137,6 +2141,7 @@ app.post(
     }
   },
 );
+app.use('/api/v1/tailoring/orders', tailoringOrderMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringWorkflowRoutes);
 
