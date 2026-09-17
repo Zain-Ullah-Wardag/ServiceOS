@@ -1,7 +1,7 @@
 // Run with Node 22.6+: node --experimental-strip-types --test tests/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchCustomers, duplicateCustomer, customerGarments, selectCustomerGarment, createdRecord, intakeLineTotal, intakeOrderPayload, garmentCategories } from '../src/lib/intake.ts';
+import { searchCustomers, isMeaningfulQuery, registrationPrefill, duplicateCustomer, customerGarments, selectCustomerGarment, createdRecord, intakeLineTotal, intakeOrderPayload, garmentCategories } from '../src/lib/intake.ts';
 const customers = [{ id: 'c1', name: 'Ahmad Khan', phone: '0300-1234567', email: 'Ahmad@example.com' }, { id: 'c2', name: 'Bilal', phone: '03111234567' }];
 const garments = [{ id: 'g1', customerId: 'c1', name: 'Kurta' }, { id: 'g2', customerId: 'c2', name: 'Suit' }];
 test('returning customers can search names case-insensitively and formatted phones', () => {
@@ -10,6 +10,47 @@ test('returning customers can search names case-insensitively and formatted phon
   assert.equal(searchCustomers(customers, 'missing').length, 0);
   assert.equal(searchCustomers(customers, 'Customer 6').length, 0); // Digits in a name are not a phone query.
 });
+test('search-first: empty and 1-character name queries match nobody and are not a search yet', () => {
+  for (const query of ['', '   ', 'a', ' A ', 'b']) assert.equal(searchCustomers(customers, query).length, 0, query);
+  for (const query of ['', '   ', 'a', '.', '()']) assert.equal(isMeaningfulQuery(query), false, query);
+});
+
+test('meaningful name queries (2+ characters) match case-insensitively', () => {
+  assert.deepEqual(searchCustomers(customers, 'ahmad').map(row => row.id), ['c1']);
+  assert.deepEqual(searchCustomers(customers, ' AHMAD KHAN ').map(row => row.id), ['c1']);
+  assert.deepEqual(searchCustomers(customers, 'ilal').map(row => row.id), ['c2']);
+  assert.equal(isMeaningfulQuery('ah'), true);
+  assert.equal(searchCustomers(customers, 'ah').length, 1);
+});
+
+test('phone-like queries match formatted and unformatted stored numbers', () => {
+  assert.deepEqual(searchCustomers(customers, '03001234567').map(row => row.id), ['c1']);
+  assert.deepEqual(searchCustomers(customers, '(0300) 123-4567').map(row => row.id), ['c1']);
+  assert.deepEqual(searchCustomers(customers, '0300 123 4567').map(row => row.id), ['c1']);
+  assert.equal(searchCustomers(customers, '03009999999').length, 0);
+  assert.equal(isMeaningfulQuery('0300 123 4567'), true);
+});
+
+test('register shortcut prefills the phone from phone-like queries', () => {
+  assert.deepEqual(registrationPrefill('03001234567'), { name: '', phone: '03001234567' });
+  assert.deepEqual(registrationPrefill(' (0300) 123-4567 '), { name: '', phone: '(0300) 123-4567' });
+  assert.deepEqual(registrationPrefill('+92 300 1234567'), { name: '', phone: '+92 300 1234567' });
+});
+
+test('register shortcut prefills the name from name-like queries', () => {
+  assert.deepEqual(registrationPrefill('Ahmad Khan'), { name: 'Ahmad Khan', phone: '' });
+  assert.deepEqual(registrationPrefill('  Maryam Bano  '), { name: 'Maryam Bano', phone: '' });
+  assert.deepEqual(registrationPrefill('O’Brien'), { name: 'O’Brien', phone: '' });
+});
+
+test('ambiguous mixed input prefills nothing incorrectly', () => {
+  assert.deepEqual(registrationPrefill('Ahmad 0300'), { name: '', phone: '' });
+  assert.deepEqual(registrationPrefill('Customer 6'), { name: '', phone: '' });
+  assert.deepEqual(registrationPrefill('ahmad@example.com'), { name: '', phone: '' });
+  assert.deepEqual(registrationPrefill('a'), { name: '', phone: '' });
+  assert.deepEqual(registrationPrefill(''), { name: '', phone: '' });
+});
+
 test('duplicate check recognizes normalized phone or email, not matching name alone', () => {
   assert.equal(duplicateCustomer(customers, '0300 1234567', '')?.id, 'c1');
   assert.equal(duplicateCustomer(customers, '', 'AHMAD@example.com')?.id, 'c1');

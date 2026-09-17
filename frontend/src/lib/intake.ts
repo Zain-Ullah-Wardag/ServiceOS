@@ -1,10 +1,29 @@
 export type IntakeCustomer = { id: string; name: string; phone: string; email?: string | null; status?: string | null };
 export type IntakeGarment = { id: string; customerId: string; name: string; category?: string | null; description?: string | null };
 export const garmentCategories = ['Kurta', 'Shalwar Kameez', '2-Piece Suit', 'Other'];
+export function phoneQueryDigits(query: string) {
+  const text = query.trim();
+  return /^[\d\s().+-]+$/.test(text) ? text.replace(/\D/g, '') : '';
+}
+/** Search-first drawer: empty input and 1-character name guesses are not a search yet. */
+export function isMeaningfulQuery(query: string) {
+  const text = query.trim();
+  return !!text && (!!phoneQueryDigits(text) || (text.length >= 2 && /\p{L}/u.test(text)));
+}
 export function searchCustomers(customers: IntakeCustomer[], query: string) {
   const text = query.trim().toLocaleLowerCase();
-  const phone = /^[+\d\s().-]+$/.test(query.trim()) ? query.replace(/\D/g, '') : '';
-  return customers.filter(customer => customer.name.toLocaleLowerCase().includes(text) || customer.phone.toLocaleLowerCase().includes(text) || (!!phone && customer.phone.replace(/\D/g, '').includes(phone)));
+  if (!text) return [];
+  const digits = phoneQueryDigits(text);
+  if (digits) return customers.filter(customer => customer.phone.replace(/\D/g, '').includes(digits));
+  if (text.length < 2 || !/\p{L}/u.test(text)) return [];
+  return customers.filter(customer => customer.name.toLocaleLowerCase().includes(text) || customer.phone.toLocaleLowerCase().includes(text));
+}
+/** Prefills the quick-registration form from a search query; ambiguous mixed input prefills nothing. */
+export function registrationPrefill(query: string): { name: string; phone: string } {
+  const text = query.trim();
+  if (phoneQueryDigits(text)) return { name: '', phone: text };
+  if (text.length >= 2 && /^[\p{L}\s.'’-]+$/u.test(text)) return { name: text, phone: '' };
+  return { name: '', phone: '' };
 }
 export function duplicateCustomer(customers: IntakeCustomer[], phone: string, email: string) {
   const digits = phone.replace(/\D/g, '');
