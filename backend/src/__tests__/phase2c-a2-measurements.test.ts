@@ -27,7 +27,7 @@ describe('Phase 2C-A2.2 real PostgreSQL order-aware measurements', () => {
   let foreignToken: string;
 
   beforeAll(async () => {
-    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()::text AS current_database`;
+    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()`;
     expect(db[0].current_database).toBe('serviceos_test');
     const suffix = randomUUID();
     tenantId = (await prisma.tenant.create({ data: { name: 'A2.2 tests', slug: `measurements-${suffix}`, businessType: 'tailoring' } })).id;

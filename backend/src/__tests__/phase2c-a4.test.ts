@@ -22,7 +22,7 @@ describe('A4 measurement snapshots and staff onboarding (real serviceos_test)', 
   const password = 'Local-Test-Strong!42';
 
   beforeAll(async () => {
-    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()::text AS current_database`;
+    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()`;
     expect(db[0].current_database).toBe('serviceos_test');
     tenantId = (await prisma.tenant.create({ data: { name: 'A4 tenant', slug: `a4-${randomUUID()}`, businessType: 'tailoring' } })).id;
     foreignTenantId = (await prisma.tenant.create({ data: { name: 'Other A4 tenant', slug: `other-a4-${randomUUID()}` } })).id;

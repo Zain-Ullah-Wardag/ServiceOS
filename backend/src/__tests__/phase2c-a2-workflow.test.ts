@@ -25,7 +25,7 @@ describe('Phase 2C-A2.1 real PostgreSQL workflow', () => {
   const users: string[] = [];
 
   beforeAll(async () => {
-    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()::text AS current_database`;
+    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()`;
     expect(db[0].current_database).toBe('serviceos_test');
     const suffix = randomUUID();
     const tenant = await prisma.tenant.create({ data: { name: 'Workflow tests', slug: `workflow-${suffix}`, businessType: 'tailoring' } });

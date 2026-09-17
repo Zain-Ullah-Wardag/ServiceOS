@@ -147,6 +147,40 @@ describe('A7.2 tailoring order accounting (real serviceos_test)', () => {
   const invoiceRow = (id: string) =>
     prisma.invoice.findUniqueOrThrow({ where: { id } });
 
+  /**
+   * A pre-existing invoice linked to an order (as the generic
+   * POST /invoices route could create), with selectively violated
+   * invariants. All amounts default to the authoritative 4000 order.
+   */
+  async function makeExistingInvoice(opts: {
+    orderId: string;
+    customerId?: string;
+    total?: number;
+    subtotal?: number;
+    discount?: number;
+    tax?: number;
+    paidAmount?: number;
+    balance?: number;
+    status?: string;
+  }) {
+    return prisma.invoice.create({
+      data: {
+        tenantId,
+        customerId: opts.customerId ?? customerId,
+        orderId: opts.orderId,
+        invoiceNumber: `INV-A72-PRE-${randomUUID().slice(0, 8)}`,
+        subtotal: opts.subtotal ?? 4000,
+        discount: opts.discount ?? 0,
+        tax: opts.tax ?? 0,
+        total: opts.total ?? 4000,
+        paidAmount: opts.paidAmount ?? 0,
+        balance: opts.balance ?? 4000,
+        status: opts.status ?? 'issued',
+        issuedAt: new Date(),
+      },
+    });
+  }
+
   /* ------------------------------------------------------------
      ACCOUNTING READ
   ------------------------------------------------------------ */
@@ -508,6 +542,122 @@ describe('A7.2 tailoring order accounting (real serviceos_test)', () => {
     expect(payments).toHaveLength(1);
     expect(d(payments[0].amount)).toBe('4000');
     expect(payments[0].orderId).toBe(order.id);
+  });
+
+  /* ------------------------------------------------------------
+     EXISTING INVOICE INTEGRITY
+  ------------------------------------------------------------ */
+
+  it('rejects a single existing invoice for the wrong customer (read + ensure)', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, customerId: otherCustomerId });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    // No writes on rejection: the conflicting invoice is neither repaired
+    // nor replaced with a second one.
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('rejects a single existing invoice with a wrong total (read + ensure)', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, total: 3999, balance: 3999 });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(read.body.error.message).toBe(
+      'Existing invoice does not match the authoritative order accounting.',
+    );
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('rejects a single existing invoice with a wrong subtotal', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, subtotal: 3800 });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('rejects a single existing invoice whose paidAmount + balance != total', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, paidAmount: 1000, balance: 2000 });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('rejects a single existing invoice with a negative balance', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, paidAmount: 4500, balance: -500 });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('rejects a cancelled linked invoice instead of adopting it', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    await makeExistingInvoice({ orderId: order.id, status: 'cancelled' });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(409);
+    expect(read.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+
+    // A7.2 never auto-creates a replacement invoice.
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(409);
+    expect(ensure.body.error.code).toBe('ACCOUNTING_INTEGRITY_ERROR');
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  it('accepts a valid pre-existing operational invoice without creating another', async () => {
+    const { order, tailoringOrder } = await makeOrder();
+    const existing = await makeExistingInvoice({ orderId: order.id });
+
+    const read = await accounting(tailoringOrder.id);
+    expect(read.status).toBe(200);
+    expect(read.body.data.invoice).toMatchObject({
+      id: existing.id,
+      status: 'issued',
+    });
+    expect(d(read.body.data.invoice.total)).toBe('4000');
+    expect(d(read.body.data.invoice.balance)).toBe('4000');
+    expect(read.body.data.payments).toEqual([]);
+
+    const ensure = await ensureInvoice(tailoringOrder.id);
+    expect(ensure.status).toBe(200);
+    expect(ensure.body.data.id).toBe(existing.id);
+
+    expect(await prisma.invoice.count({ where: { orderId: order.id } })).toBe(1);
   });
 
   /* ------------------------------------------------------------

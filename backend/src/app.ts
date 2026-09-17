@@ -2254,6 +2254,56 @@ function sumOrderItemTotals(items: { total: unknown }[]) {
   );
 }
 
+/**
+ * Verify that a single existing invoice linked to a tailoring order matches
+ * the authoritative order accounting under the current A7 policy.
+ * All monetary comparisons use Prisma Decimal; authoritative values are
+ * never converted to ordinary JS numbers.
+ *
+ * Returns false when any invariant fails. Callers must surface an
+ * ACCOUNTING_INTEGRITY_ERROR — they must not adopt, repair, or replace the
+ * invoice, and no second invoice may be created.
+ */
+function isAuthoritativeOperationalInvoice(
+  invoice: {
+    tenantId: string;
+    orderId: string | null;
+    customerId: string;
+    status: string;
+    total: unknown;
+    subtotal: unknown;
+    discount: unknown;
+    tax: unknown;
+    paidAmount: unknown;
+    balance: unknown;
+  },
+  order: { id: string; customerId: string },
+  tenantId: string,
+  authoritativeTotal: Prisma.Decimal,
+): boolean {
+  const total = new Prisma.Decimal(String(invoice.total));
+  const subtotal = new Prisma.Decimal(String(invoice.subtotal));
+  const discount = new Prisma.Decimal(String(invoice.discount));
+  const tax = new Prisma.Decimal(String(invoice.tax));
+  const paidAmount = new Prisma.Decimal(String(invoice.paidAmount));
+  const balance = new Prisma.Decimal(String(invoice.balance));
+
+  return (
+    invoice.tenantId === tenantId &&
+    invoice.orderId === order.id &&
+    invoice.customerId === order.customerId &&
+    // A cancelled invoice never silently becomes the operational invoice.
+    invoice.status !== 'cancelled' &&
+    total.equals(authoritativeTotal) &&
+    subtotal.equals(authoritativeTotal) &&
+    discount.isZero() &&
+    tax.isZero() &&
+    paidAmount.gte(0) &&
+    balance.gte(0) &&
+    paidAmount.plus(balance).equals(total)
+  );
+}
+
 app.get(
   '/api/v1/tailoring/orders/:id/accounting',
   authMiddleware,
@@ -2319,6 +2369,22 @@ app.get(
       }
 
       const invoice = invoices[0] ?? null;
+
+      // A single existing invoice is only returned when it matches the
+      // authoritative order accounting; never adopted silently.
+      if (
+        invoice &&
+        !isAuthoritativeOperationalInvoice(invoice, order, req.tenantId!, total)
+      ) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'ACCOUNTING_INTEGRITY_ERROR',
+            message:
+              'Existing invoice does not match the authoritative order accounting.',
+          },
+        });
+      }
 
       const payments = invoice
         ? await prisma.payment.findMany({
@@ -2443,6 +2509,9 @@ app.post(
           throw new AccountingNotFoundError('Order not found');
         }
 
+        // Derive the authoritative total from OrderItem totals only.
+        const total = sumOrderItemTotals(order.items);
+
         const invoices = await tx.invoice.findMany({
           where: {
             tenantId: req.tenantId!,
@@ -2456,13 +2525,24 @@ app.post(
           );
         }
 
-        // Idempotent: exactly one operational invoice already exists.
+        // Idempotent: exactly one operational invoice already exists, and
+        // only when it matches the authoritative order accounting.
         if (invoices.length === 1) {
+          if (
+            !isAuthoritativeOperationalInvoice(
+              invoices[0],
+              order,
+              req.tenantId!,
+              total,
+            )
+          ) {
+            throw new AccountingIntegrityError(
+              'Existing invoice does not match the authoritative order accounting.',
+            );
+          }
+
           return { invoice: invoices[0], created: false };
         }
-
-        // Derive the authoritative total from OrderItem totals only.
-        const total = sumOrderItemTotals(order.items);
 
         const invoice = await tx.invoice.create({
           data: {
