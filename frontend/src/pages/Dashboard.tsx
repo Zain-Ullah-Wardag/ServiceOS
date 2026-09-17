@@ -36,7 +36,8 @@ import { LatestRequestGate } from '../lib/latestRequest';
 import WorkflowDrawer from '../components/WorkflowDrawer';
 import IntakeCustomerGarment from '../components/IntakeCustomerGarment';
 import { createdRecord, intakeLineTotal, intakeOrderPayload, type IntakeCustomer, type IntakeGarment } from '../lib/intake';
-import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionStages, type ProductionFilters } from '../lib/productionView';
+import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionPaymentOptions, productionStages, type ProductionFilters } from '../lib/productionView';
+import { reusableMeasurementValues, type HistoryEntry } from '../lib/measurementHistory';
 import { deriveAccountingView, EMPTY_PAYMENT_HISTORY_TEXT, fullBalanceAmount, PAYMENT_METHODS, paymentHistoryLine, validatePaymentAmount, type AccountingData } from '../lib/accounting';
 
 /* =========================================================
@@ -1404,6 +1405,8 @@ type ProductionOrder = {
     notes?: string | null;
     items?: { quantity?: number; unitPrice?: string | number; total: string | number; service?: { name: string } }[];
   };
+  /** A8.2 compact summary from GET /api/v1/tailoring/orders (no payment history). */
+  accounting?: { total: string; paid: string | null; balance: string | null; paymentStatus: 'unpaid' | 'partial' | 'paid' | 'issue' } | null;
 };
 
 type ProductionTemplate = {
@@ -1575,6 +1578,31 @@ function ProductionStatus({ status }: { status: string }) {
   return <span className={`inline-block rounded-lg px-2 py-1 text-xs font-semibold leading-snug ${color}`}>{formatStatus(status)}</span>;
 }
 
+/**
+ * A8.2 compact payment chip for production rows. Status-only by design (no
+ * Total/Paid/Balance columns). Wording may differ from the drawer
+ * (Unpaid vs No Payment) but the underlying classification is the backend's
+ * row.accounting.paymentStatus, so chip and drawer can never disagree.
+ * 'issue' (invalid/inconsistent accounting) is shown explicitly and is never
+ * rendered as Unpaid/Partial/Paid.
+ */
+const PAYMENT_CHIP: Record<string, { label: string; className: string }> = {
+  unpaid: { label: 'Unpaid', className: 'bg-slate-100 text-slate-600' },
+  partial: { label: 'Partially Paid', className: 'bg-amber-50 text-amber-700' },
+  paid: { label: 'Paid', className: 'bg-emerald-50 text-emerald-700' },
+  issue: { label: 'Accounting Issue', className: 'bg-red-50 text-red-700' },
+};
+
+function paymentChipLabel(paymentStatus: string | null | undefined): string | null {
+  return PAYMENT_CHIP[paymentStatus ?? '']?.label ?? null;
+}
+
+function PaymentChip({ paymentStatus }: { paymentStatus: string | null | undefined }) {
+  const chip = PAYMENT_CHIP[paymentStatus ?? ''];
+  if (!chip) return null;
+  return <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-semibold leading-snug ${chip.className}`} title={`Payment: ${chip.label}`}>{chip.label}</span>;
+}
+
 function ProductionStepper({ status }: { status: string }) {
   const current = productionStages.findIndex(stage => stage === status);
   if (status === 'cancelled') return <p className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">Cancelled · terminal state. This order is view-only.</p>;
@@ -1626,6 +1654,17 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const [paymentSaving, setPaymentSaving] = useState(false);
   const accountingGate = useRef<LatestRequestGate | null>(null);
   if (!accountingGate.current) accountingGate.current = new LatestRequestGate();
+  // A8.1: returning-customer measurement history (read-only, stale-safe).
+  const [historyPhase, setHistoryPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyError, setHistoryError] = useState('');
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
+  const historyGate = useRef<LatestRequestGate | null>(null);
+  if (!historyGate.current) historyGate.current = new LatestRequestGate();
+  // A8.1: raw historical fields queued for the UNSAVED measurement form by
+  // "Use as Starting Values". Consumed (and cleared) by openPanel — nothing
+  // is linked or created until the user saves the form.
+  const measurementPrefill = useRef<Record<string, unknown> | null>(null);
   const paymentErrorRef = useRef<HTMLParagraphElement>(null);
   const busy = preparing || saving || paymentSaving;
 
@@ -1662,6 +1701,14 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
         const response = await api(`/tailoring/orders/${row.id}/measurement-template`);
         if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement template.');
         setTemplate(response.data);
+        // A8.1: "Use as Starting Values" prefill — the current resolved
+        // template is authoritative, so the historical fields are filtered
+        // through it here (extras dropped, missing required stay empty).
+        const prefill = measurementPrefill.current;
+        if (prefill) {
+          measurementPrefill.current = null;
+          setValues(reusableMeasurementValues(response.data.fields, prefill));
+        }
       } else if (action.kind === 'viewMeasurement' || action.kind === 'editMeasurement') {
         const response = await api(`/tailoring/orders/${row.id}/measurement`, { cache: 'no-store' });
         if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement.');
@@ -1682,6 +1729,8 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Unable to prepare this action.');
     } finally {
+      // A stale prefill must never leak into a later, unrelated panel.
+      measurementPrefill.current = null;
       requestLock.current = false;
       setPreparing(false);
     }
@@ -1823,10 +1872,45 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     }
   }
 
+  /* ----- A8.1 measurement history (read-only) ----- */
+
+  async function loadMeasurementHistory(row: ProductionOrder) {
+    const gate = historyGate.current!;
+    const request = gate.begin();
+    setHistoryPhase('loading');
+    setHistoryError('');
+    setExpandedHistoryId(null);
+    try {
+      const response = await api(`/tailoring/orders/${row.id}/measurement-history`, { cache: 'no-store' });
+      if (!gate.isCurrent(request)) return; // Stale response: a newer order owns the state.
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to load measurement history.');
+      setHistoryEntries(Array.isArray(response.data) ? response.data : []);
+      setHistoryPhase('ready');
+    } catch (e) {
+      if (!gate.isCurrent(request)) return;
+      setHistoryPhase('error');
+      setHistoryError(e instanceof Error ? e.message : 'Unable to load measurement history.');
+    }
+  }
+
+  /**
+   * A8.1 "Use as Starting Values": opens the (unsaved) Take Measurement form
+   * prefilled from the chosen historical measurement. It does NOT link the
+   * order to the historical measurement, does NOT modify it, and creates
+   * nothing — the normal save flow creates a brand-new snapshot.
+   */
+  function applyMeasurementStartValues(entry: HistoryEntry) {
+    const row = rows.find(candidate => candidate.id === selectedId);
+    if (!row || busy || requestLock.current) return;
+    measurementPrefill.current = entry.fields;
+    void openPanel(row, { kind: 'measurement', title: 'Take Measurement' });
+  }
+
   // Opening a different order (or closing the drawer) resets the accounting
-  // view and reloads database-backed values afresh.
+  // and measurement-history views and reloads database-backed values afresh.
   useEffect(() => {
     accountingGate.current?.invalidate();
+    historyGate.current?.invalidate();
     setAccounting(null);
     setAccountingError('');
     setRefreshingBalance(false);
@@ -1836,10 +1920,15 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     setPaymentReference('');
     setPaymentError('');
     setAccountingPhase('idle');
+    setHistoryEntries([]);
+    setHistoryError('');
+    setExpandedHistoryId(null);
+    setHistoryPhase('idle');
     const row = rows.find(candidate => candidate.id === selectedId);
     if (row) {
       setAccountingPhase('loading');
       void loadAccounting(row);
+      void loadMeasurementHistory(row);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -1908,11 +1997,12 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
         </div>
         {!selectedId && !showNewOrder && notice && <p role="status" className="p-3 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
         <section aria-label="Production filters" className="space-y-4">
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
             <label className="col-span-2 sm:col-span-1 min-w-0 text-xs font-semibold text-slate-500">Search orders<div className="relative mt-1"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input type="search" value={filters.search} onChange={e => changeFilter('search', e.target.value)} placeholder="Order, customer or garment" className={`${filterClass} pl-9`} /></div></label>
             <label className="min-w-0 text-xs font-semibold text-slate-500">Status<select value={filters.status} onChange={e => changeFilter('status', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All statuses</option>{[...productionStages, 'cancelled'].map(status => <option key={status} value={status}>{formatStatus(status)}</option>)}</select></label>
             <label className="min-w-0 text-xs font-semibold text-slate-500">Assigned staff<select value={filters.staff} onChange={e => changeFilter('staff', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All staff</option><option value="unassigned">Unassigned</option>{staffOptions.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
             <label className="min-w-0 text-xs font-semibold text-slate-500">Priority<select value={filters.priority} onChange={e => changeFilter('priority', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All priorities</option>{['low', 'normal', 'high', 'urgent'].map(priority => <option key={priority} value={priority}>{formatStatus(priority)}</option>)}</select></label>
+            <label className="col-span-2 md:col-span-1 min-w-0 text-xs font-semibold text-slate-500">Payment<select value={filters.payment ?? 'all'} onChange={e => changeFilter('payment', e.target.value)} className={`${filterClass} mt-1`}>{productionPaymentOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           </div>
           <div className="flex flex-wrap gap-2" aria-label="Quick status filters">
             {['all', ...productionStages.filter(stage => stage !== 'delivered')].map(status => <button key={status} type="button" aria-pressed={filters.status === status} onClick={() => changeFilter('status', status)} className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${filters.status === status ? 'bg-brand-900 text-white border-brand-900' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-400'}`}>
@@ -1921,7 +2011,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
             {hasFilters && <button type="button" onClick={clearFilters} className="text-xs font-medium text-brand-700 underline px-2">Clear filters</button>}
           </div>
         </section>
-        {filteredRows.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center"><Package className="mx-auto mb-3 text-slate-400" size={28} /><h3 className="font-semibold">{rows.length ? 'No matching orders' : 'Your production queue is empty'}</h3><p className="text-sm text-slate-500 mt-1">{rows.length ? 'Try a different search or clear your filters.' : 'Create your first tailoring order to begin.'}</p>{hasFilters && <button onClick={clearFilters} className="mt-4 text-sm font-semibold text-brand-700 underline">Reset filters</button>}</div> : <>
+        {filteredRows.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center"><Package className="mx-auto mb-3 text-slate-400" size={28} /><h3 className="font-semibold">{rows.length ? 'No production orders match these filters.' : 'Your production queue is empty'}</h3><p className="text-sm text-slate-500 mt-1">{rows.length ? 'Try a different search or clear your filters.' : 'Create your first tailoring order to begin.'}</p>{hasFilters && <button onClick={clearFilters} className="mt-4 text-sm font-semibold text-brand-700 underline">Reset filters</button>}</div> : <>
           <div className="hidden md:block rounded-2xl border border-slate-200 bg-white shadow-sm">
             <table className="w-full table-fixed text-sm" aria-label="Tailoring production orders">
               <thead><tr className="border-b border-slate-200 text-xs text-slate-500 bg-slate-50">
@@ -1931,7 +2021,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                 <td className="px-3 py-4"><p title={row.order?.orderNumber} className="truncate font-semibold text-brand-800">{row.order?.orderNumber || '—'}</p></td>
                 <td className="px-3 py-4"><p className="truncate font-medium" title={row.customer?.name}>{row.customer?.name || '—'}</p><p className="truncate text-xs text-slate-500 mt-1" title={row.garment?.name}>{row.garment?.name || 'No garment'}</p></td>
                 <td className="px-3 py-4 text-xs text-slate-600 break-words">{formatDate(row.deliveryDate || row.order?.expectedDate)}</td>
-                <td className="px-3 py-4"><ProductionStatus status={row.status} /></td>
+                <td className="px-3 py-4"><div className="flex flex-col items-start gap-1"><ProductionStatus status={row.status} /><PaymentChip paymentStatus={row.accounting?.paymentStatus} /></div></td>
                 <td className="hidden xl:table-cell px-3 py-4"><p className="truncate text-xs text-slate-600" title={row.staff?.user?.name}>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</p></td>
                 <td className="hidden xl:table-cell px-3 py-4 text-right text-xs font-medium break-words">{productionTotal(row, currency)}</td>
                 <td className="px-3 py-4 text-right"><button type="button" onClick={() => viewOrder(row.id)} aria-label={`View order ${row.order?.orderNumber || row.id}`} className="rounded-lg px-3 py-2 text-xs font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-brand-500">View</button></td>
@@ -1941,7 +2031,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
           <div className="grid gap-3 md:hidden" aria-label="Production order cards">{pageRows.rows.map(row => <article key={row.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
             <div className="flex justify-between items-start gap-3"><h3 className="min-w-0 truncate font-semibold text-brand-800" title={row.order?.orderNumber}>{row.order?.orderNumber || 'Order'}</h3><ProductionStatus status={row.status} /></div>
             <p className="mt-3 font-medium break-words">{row.customer?.name || '—'}</p><p className="text-sm text-slate-500 break-words">{row.garment?.name || 'No garment'}</p>
-            <dl className="grid grid-cols-2 gap-3 text-xs my-4"><div><dt className="text-slate-500">Due date</dt><dd className="mt-1 font-medium">{formatDate(row.deliveryDate || row.order?.expectedDate)}</dd></div><div><dt className="text-slate-500">Total</dt><dd className="mt-1 font-medium break-words">{productionTotal(row, currency)}</dd></div><div className="col-span-2"><dt className="text-slate-500">Assigned staff</dt><dd className="mt-1 break-words">{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</dd></div></dl>
+            <dl className="grid grid-cols-2 gap-3 text-xs my-4"><div><dt className="text-slate-500">Due date</dt><dd className="mt-1 font-medium">{formatDate(row.deliveryDate || row.order?.expectedDate)}</dd></div><div><dt className="text-slate-500">Total</dt><dd className="mt-1 font-medium break-words">{productionTotal(row, currency)}</dd></div><div><dt className="text-slate-500">Payment</dt><dd className="mt-1 font-medium break-words">{paymentChipLabel(row.accounting?.paymentStatus) || '—'}</dd></div><div className="col-span-2"><dt className="text-slate-500">Assigned staff</dt><dd className="mt-1 break-words">{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</dd></div></dl>
             <button type="button" onClick={() => viewOrder(row.id)} aria-label={`View order ${row.order?.orderNumber || row.id}`} className="w-full rounded-lg py-2.5 bg-brand-50 text-brand-800 text-sm font-semibold hover:bg-brand-100">View Order</button>
           </article>)}</div>
         </>}
@@ -2057,6 +2147,30 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
             </section>
             <section aria-labelledby="order-measurement" className="border-t border-slate-100 pt-5"><h3 id="order-measurement" className="font-semibold text-sm mb-2">Measurement</h3>
               {selected.measurementId ? <><p className="text-xs text-slate-500 break-all mb-3">Snapshot ID: {selected.measurementId}</p>{selected.status !== 'measurement' && <p className="flex items-center gap-2 text-xs text-slate-500 mb-3"><Lock size={14} /> Locked snapshot · view only</p>}<div className="flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'viewMeasurement', title: 'View Measurement' })} className={buttonClass}>View Measurement</button>{selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'editMeasurement', title: 'Edit Measurement' })} className={buttonClass}>Edit Measurement</button>}</div></> : <p className="text-sm text-slate-500">No measurement linked to this order.{['received', 'confirmed'].includes(selected.status) && ' Take measurements after confirming the order.'}</p>}
+              {/* A8.1: this customer's prior SAVED measurements (read-only history). */}
+              <div className="mt-4 rounded-xl border border-slate-200 bg-white">
+                <div className="border-b border-slate-100 px-4 py-3"><h4 className="text-xs uppercase tracking-wider font-semibold text-slate-500">Previous Measurements</h4><p className="text-xs text-slate-400 mt-0.5">Saved measurements for {selected.customer?.name || 'this customer'} — newest first, up to 10.</p></div>
+                {historyPhase === 'loading' && <p role="status" className="px-4 py-4 text-sm text-slate-500">Loading previous measurements…</p>}
+                {historyPhase === 'error' && <div role="alert" className="px-4 py-4 text-sm"><p className="text-red-700">Unable to load previous measurements{historyError ? `: ${historyError}` : ''}.</p><button type="button" disabled={busy} onClick={() => loadMeasurementHistory(selected)} className={`${buttonClass} mt-2`}>Retry</button></div>}
+                {historyPhase === 'ready' && historyEntries.length === 0 && <p className="px-4 py-4 text-sm text-slate-500">No previous measurements saved for this customer.</p>}
+                {historyPhase === 'ready' && historyEntries.length > 0 && <ul className="divide-y divide-slate-100">{historyEntries.map(entry => <li key={entry.measurementId} className="px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium break-words">{entry.garment?.name || 'Garment'} <span className="text-xs font-normal text-slate-500">· {formatDate(entry.createdAt)} · {entry.unit}</span></p>
+                      <p className="text-xs text-slate-500 mt-0.5 break-words">{entry.template?.name ? `Template: ${entry.template.name}` : 'No template recorded'}{entry.sourceOrderNumber ? ` · From ${entry.sourceOrderNumber}` : ''}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <button type="button" disabled={busy} onClick={() => setExpandedHistoryId(expandedHistoryId === entry.measurementId ? null : entry.measurementId)} aria-expanded={expandedHistoryId === entry.measurementId} className={buttonClass}>{expandedHistoryId === entry.measurementId ? 'Hide Values' : 'View Values'}</button>
+                      {selected.measurementId
+                        ? <span className="inline-flex items-center gap-1 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-400"><Lock size={12} /> Reuse disabled</span>
+                        : <button type="button" disabled={busy || !entry.compatible} title={entry.compatible ? 'Prefill the measurement form with these values. Nothing is saved until you save the form.' : 'Different measurement template — cannot be reused for this order.'} onClick={() => applyMeasurementStartValues(entry)} className="rounded-lg bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-800 hover:bg-brand-100 disabled:cursor-not-allowed disabled:opacity-50">Use as Starting Values</button>}
+                    </div>
+                  </div>
+                  {selected.measurementId && <p className="mt-1 text-xs text-slate-500">Reuse is disabled: this order already has a saved measurement. Historical values are shown for reference only.</p>}
+                  {!entry.compatible && <p className="mt-1 text-xs text-slate-500">Different measurement template — shown for reference, not reusable.</p>}
+                  {expandedHistoryId === entry.measurementId && <dl className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 text-xs sm:grid-cols-3">{Object.entries(entry.fields).map(([name, value]) => <div key={name} className="min-w-0"><dt className="text-slate-500 break-words">{name}</dt><dd className="mt-0.5 font-medium break-words">{typeof value === 'number' ? `${value} ${entry.unit}` : String(value)}</dd></div>)}{!Object.keys(entry.fields).length && <p className="text-slate-500">No values saved.</p>}</dl>}
+                </li>)}</ul>}
+              </div>
             </section>
             <section aria-labelledby="order-services" className="border-t border-slate-100 pt-5"><h3 id="order-services" className="font-semibold text-sm mb-3">Services</h3><ul className="divide-y divide-slate-100">{selected.order?.items?.map((item, index) => <li key={index} className="flex justify-between gap-4 py-3 text-sm"><div className="min-w-0"><p className="font-medium break-words">{item.service?.name || 'Service'}</p><p className="text-xs text-slate-500 mt-1">{item.quantity ?? '—'} × {item.unitPrice != null ? formatMoney(item.unitPrice, currency) : '—'}</p></div><p className="shrink-0 font-medium">{formatMoney(item.total, currency)}</p></li>)}</ul>{!selected.order?.items?.length && <p className="text-sm text-slate-500">No service items available.</p>}</section>
             <section aria-labelledby="order-notes" className="border-t border-slate-100 pt-5"><h3 id="order-notes" className="font-semibold text-sm mb-2">Notes</h3><p className="whitespace-pre-wrap text-sm text-slate-600">{selected.notes || selected.order?.notes || 'No notes added.'}</p></section>

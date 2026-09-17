@@ -16,6 +16,11 @@ import { errorHandler } from './middleware/errorHandler.js';
 import { auditLog } from './middleware/audit.js';
 import { requirePermission } from './middleware/requirePermission.js';
 import { validateBody } from './middleware/validate.js';
+import {
+  deriveProductionAccounting,
+  isAuthoritativeOperationalInvoice,
+  sumOrderItemTotals,
+} from './services/accounting.js';
 
 import {
   customerCreateSchema,
@@ -2034,7 +2039,11 @@ app.get(
 
         include: {
           order: {
-            include: { items: { include: { service: true } } },
+            // A8.2: invoices come in with the order (one eager include —
+            // no per-row accounting requests, i.e. no N+1). Rows stay
+            // compact: the summary below is the only accounting data in the
+            // list response (no full payment history).
+            include: { items: { include: { service: true } }, invoices: true },
           },
           customer: true,
           garment: true,
@@ -2056,9 +2065,30 @@ app.get(
         },
       });
 
+      // A8.2: derive a compact accounting summary per row using the shared
+      // A7 rules (services/accounting.ts). A single broken row degrades to an
+      // 'issue' summary instead of failing the whole list.
+      const data = tailoringOrders.map((row) => {
+        try {
+          const accounting = deriveProductionAccounting(
+            row.order.items,
+            row.order.invoices,
+            req.tenantId!,
+            row.order.id,
+            row.order.customerId,
+          );
+          return { ...row, accounting };
+        } catch {
+          return {
+            ...row,
+            accounting: { total: '0.00', paid: null, balance: null, paymentStatus: 'issue' as const },
+          };
+        }
+      });
+
       return res.json({
         success: true,
-        data: tailoringOrders,
+        data,
       });
     } catch (error) {
       console.error('TAILORING ORDERS LIST ERROR:', error);
@@ -2243,66 +2273,8 @@ class PaymentRecordError extends Error {
   }
 }
 
-/**
- * Derive the authoritative order total from SUM(OrderItem.total).
- * Uses Decimal-safe arithmetic only; never trusts client-provided totals.
- */
-function sumOrderItemTotals(items: { total: unknown }[]) {
-  return items.reduce(
-    (sum, item) => sum.plus(new Prisma.Decimal(String(item.total))),
-    new Prisma.Decimal(0),
-  );
-}
-
-/**
- * Verify that a single existing invoice linked to a tailoring order matches
- * the authoritative order accounting under the current A7 policy.
- * All monetary comparisons use Prisma Decimal; authoritative values are
- * never converted to ordinary JS numbers.
- *
- * Returns false when any invariant fails. Callers must surface an
- * ACCOUNTING_INTEGRITY_ERROR — they must not adopt, repair, or replace the
- * invoice, and no second invoice may be created.
- */
-function isAuthoritativeOperationalInvoice(
-  invoice: {
-    tenantId: string;
-    orderId: string | null;
-    customerId: string;
-    status: string;
-    total: unknown;
-    subtotal: unknown;
-    discount: unknown;
-    tax: unknown;
-    paidAmount: unknown;
-    balance: unknown;
-  },
-  order: { id: string; customerId: string },
-  tenantId: string,
-  authoritativeTotal: Prisma.Decimal,
-): boolean {
-  const total = new Prisma.Decimal(String(invoice.total));
-  const subtotal = new Prisma.Decimal(String(invoice.subtotal));
-  const discount = new Prisma.Decimal(String(invoice.discount));
-  const tax = new Prisma.Decimal(String(invoice.tax));
-  const paidAmount = new Prisma.Decimal(String(invoice.paidAmount));
-  const balance = new Prisma.Decimal(String(invoice.balance));
-
-  return (
-    invoice.tenantId === tenantId &&
-    invoice.orderId === order.id &&
-    invoice.customerId === order.customerId &&
-    // A cancelled invoice never silently becomes the operational invoice.
-    invoice.status !== 'cancelled' &&
-    total.equals(authoritativeTotal) &&
-    subtotal.equals(authoritativeTotal) &&
-    discount.isZero() &&
-    tax.isZero() &&
-    paidAmount.gte(0) &&
-    balance.gte(0) &&
-    paidAmount.plus(balance).equals(total)
-  );
-}
+// A7.2 accounting helpers now live in services/accounting.ts (single
+// source of truth, shared with the A8.2 production list summary).
 
 app.get(
   '/api/v1/tailoring/orders/:id/accounting',

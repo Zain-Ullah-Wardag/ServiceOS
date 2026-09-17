@@ -23,6 +23,76 @@ router.get('/:id/measurement-template', authMiddleware, requirePermission('tailo
     } catch (error) { next(error); }
   });
 
+/**
+ * A8.1 GET /api/v1/tailoring/orders/:id/measurement-history
+ *
+ * Returns the customer's ACTUAL prior saved measurements (newest first, capped
+ * at the 10 most recent) that could seed a new measurement for this order.
+ *
+ * Rules (A8.1, locked):
+ * - Only real saved Measurement rows are listed — never template-generated
+ *   values and never defaults.
+ * - The current order's own snapshot (TailoringOrder.measurementId) is
+ *   excluded so the list never contains the order's already-saved values.
+ * - Tenant isolation: scoped to the authenticated tenant; orders, garments,
+ *   templates and measurements of other tenants are invisible.
+ * - Compatibility is judged by measurement-TEMPLATE identity only (never by
+ *   customer name): `compatible: true` when the historical measurement used
+ *   the SAME template the current order resolves to. Entries from other
+ *   templates stay visible and are marked `compatible: false`. If the current
+ *   order's template cannot be resolved, entries are still returned but all
+ *   marked `compatible: false` (nothing is silently presented as compatible).
+ * - Read-only: this endpoint never creates, links or mutates any measurement.
+ */
+router.get('/:id/measurement-history', authMiddleware, requirePermission('tailoring.read'),
+  async (req, res, next) => {
+    try {
+      const tenantId = req.tenantId!;
+      const order = await loadMeasurementOrder(prisma, req.params.id, tenantId);
+
+      let currentTemplateId: string | null = null;
+      try {
+        currentTemplateId = (await resolveMeasurementTemplate(prisma, order)).template.id;
+      } catch {
+        currentTemplateId = null;
+      }
+
+      const measurements = await prisma.measurement.findMany({
+        where: {
+          tenantId,
+          customerId: order.customerId,
+          ...(order.measurementId ? { id: { not: order.measurementId } } : {}),
+        },
+        include: {
+          garment: { select: { id: true, name: true, category: true } },
+          template: { select: { id: true, name: true } },
+          tailoringOrders: { select: { id: true, createdAt: true, order: { select: { orderNumber: true } } } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
+
+      const data = measurements.map((measurement) => {
+        const source = measurement.tailoringOrders
+          ? [...measurement.tailoringOrders].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null
+          : null;
+        return {
+          measurementId: measurement.id,
+          sourceTailoringOrderId: source?.id ?? null,
+          sourceOrderNumber: source?.order?.orderNumber ?? null,
+          createdAt: measurement.createdAt,
+          garment: measurement.garment,
+          template: measurement.template ?? { id: null, name: null },
+          unit: measurement.unit,
+          fields: measurement.fields,
+          compatible: currentTemplateId !== null && measurement.templateId === currentTemplateId,
+        };
+      });
+
+      res.json({ success: true, data });
+    } catch (error) { next(error); }
+  });
+
 router.post('/:id/measurements', authMiddleware, requirePermission('tailoring.update'),
   validateBody(z.object({ templateId: fallbackId, fields: z.record(z.unknown()) }).strict()),
   async (req, res, next) => {
