@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { api } from '../lib/api';
 import { createdRecord, customerGarments, duplicateCustomer, garmentCategories, searchCustomers, selectCustomerGarment, type IntakeCustomer, type IntakeGarment } from '../lib/intake';
 
@@ -96,15 +97,25 @@ export default function IntakeCustomerGarment({ busy, onBusyChange, onCustomer, 
     } catch (error) { setSaveError(error instanceof Error ? error.message : 'Unable to save.'); }
     finally { lock.current = false; setSaving(false); onBusyChange(false); }
   }
+  const matches = searchCustomers(customers, query);
   const inactive = (row: IntakeCustomer) => !!row.status && row.status !== 'active';
   return <div className="space-y-6 mb-6">
     <section aria-labelledby="intake-customer-title"><h3 id="intake-customer-title" className="font-semibold text-sm mb-3"><span className="text-brand-500 mr-2">01</span> Customer</h3>
       {customer ? <div className="flex justify-between gap-3 rounded-xl bg-brand-50 p-3"><div className="min-w-0"><p className="font-semibold">{customer.name}</p><p className="text-sm text-slate-600">{customer.phone}</p></div><button type="button" disabled={busy || saving} onClick={() => chooseCustomer(null)} className={button}>Change customer</button></div> : <>
-        <label className="block text-sm font-medium">Search customer<input type="search" value={query} disabled={busy || saving} onChange={event => setQuery(event.target.value)} placeholder="Name or phone number" className={input} /></label>
+        <label className="block text-sm font-medium">Search by name or phone<input type="search" value={query} disabled={busy || saving} onChange={event => setQuery(event.target.value)} placeholder="Name or phone number" className={input} /></label>
         {loadingCustomers && <p role="status" className="text-sm mt-3 text-slate-500">Loading customers for search…</p>}
         {customerError && <div role="alert" className="text-sm text-red-700 mt-3">{customerError}<button type="button" onClick={() => setAttempt(value => value + 1)} className={button}>Retry customers</button></div>}
         {!loadingCustomers && !customerError && <>
-          <div aria-label="Matching customers" className="max-h-52 overflow-y-auto divide-y divide-slate-100 my-3">{searchCustomers(customers, query).map(row => <div key={row.id} className="flex items-center justify-between gap-3 py-3"><div className="min-w-0"><p className="text-sm font-semibold">{row.name}</p><p className="text-xs text-slate-500">{row.phone}{inactive(row) && ' · Inactive'}</p></div><button type="button" disabled={busy || saving || inactive(row)} aria-label={`Select customer ${row.name} ${row.phone}`} onClick={() => chooseCustomer(row)} className={button}>Select</button></div>)}{!searchCustomers(customers, query).length && <p className="text-sm text-slate-500 py-3">No matching customers. Register them below.</p>}</div>
+          <section aria-labelledby="intake-matches-title" className="my-4">
+            <h4 id="intake-matches-title" className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Matches</h4>
+            <div className="max-h-64 overflow-y-auto space-y-2 p-1 -m-1">
+              {matches.map(row => <button key={row.id} type="button" disabled={busy || saving || inactive(row)} aria-label={`Select customer ${row.name} ${row.phone}`} onClick={() => chooseCustomer(row)} className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 text-left transition-colors hover:border-brand-400 hover:bg-brand-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 disabled:cursor-not-allowed disabled:opacity-50">
+                <span className="min-w-0"><span className="block break-words text-sm font-semibold text-slate-800">{row.name}</span><span className="mt-1 block break-words text-sm text-slate-500">{row.phone}{inactive(row) && ' · Inactive'}</span></span>
+                <ChevronRight size={20} aria-hidden="true" className="shrink-0 text-slate-400" />
+              </button>)}
+              {!matches.length && <p className="text-sm text-slate-500 py-3">No matching customers. Register them below.</p>}
+            </div>
+          </section>
           {!register && <button type="button" disabled={busy || saving} onClick={() => { setRegister(true); setSaveError(''); }} className={button}>+ Register New Customer</button>}
         </>}
         {register && <form onSubmit={event => void quickSave(event, 'customer')} className="mt-4 space-y-3 rounded-xl border border-slate-200 p-4">
