@@ -8,6 +8,11 @@ import {
 } from 'react-router-dom';
 
 import {
+  Search,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  Lock,
   Scissors,
   Users,
   CalendarDays,
@@ -28,6 +33,8 @@ import {
 
 import { api } from '../lib/api';
 import { LatestRequestGate } from '../lib/latestRequest';
+import WorkflowDrawer from '../components/WorkflowDrawer';
+import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionStages, type ProductionFilters } from '../lib/productionView';
 
 /* =========================================================
    TYPES
@@ -385,7 +392,7 @@ export default function Dashboard() {
       ==================================================== */}
 
       <aside
-        className={`fixed lg:sticky top-0 z-40 w-72 h-screen bg-brand-950 text-white flex flex-col overflow-y-auto transition-transform duration-300 ${
+        className={`fixed lg:sticky top-0 z-40 w-72 shrink-0 h-screen bg-brand-950 text-white flex flex-col overflow-y-auto transition-transform duration-300 ${
           mobileOpen
             ? 'translate-x-0'
             : '-translate-x-full lg:translate-x-0'
@@ -507,12 +514,12 @@ export default function Dashboard() {
             <Menu size={24} />
           </button>
 
-          <h1 className="font-serif text-2xl md:text-3xl tracking-tight">
+          <h1 className="min-w-0 truncate font-serif text-2xl md:text-3xl tracking-tight">
             {currentNavItem.label}
           </h1>
 
           <div className="ml-auto flex items-center gap-3 text-sm font-medium text-slate-500">
-            <span className="hidden sm:inline">
+            <span className="hidden sm:inline max-w-48 truncate">
               {tenant?.name || 'Business'}
             </span>
 
@@ -671,7 +678,7 @@ function ModuleWrapper({
   loading: boolean;
   error: string;
   refresh: () => void;
-  count: number;
+  count?: number;
   children: React.ReactNode;
 }) {
   return (
@@ -714,10 +721,10 @@ function ModuleWrapper({
 
       {!loading && !error && (
         <>
-          <div className="text-sm text-slate-500">
+          {count !== undefined && <div className="text-sm text-slate-500">
             {count} record
             {count === 1 ? '' : 's'}
-          </div>
+          </div>}
 
           {children}
         </>
@@ -1392,7 +1399,7 @@ type ProductionOrder = {
     expectedDate?: string | null;
     priority?: string;
     notes?: string | null;
-    items?: { total: string | number; service?: { name: string } }[];
+    items?: { quantity?: number; unitPrice?: string | number; total: string | number; service?: { name: string } }[];
   };
 };
 
@@ -1411,10 +1418,11 @@ type ProductionAction = {
 
 type NewTailoringItem = { key: number; serviceId: string; quantity: string; unitPrice: string };
 
-function NewTailoringOrderForm({ currency, onClose, onCreated }: {
+function NewTailoringOrderForm({ currency, onClose, onCreated, onBusyChange }: {
   currency: string;
   onClose: () => void;
   onCreated: () => Promise<void>;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const [customers, setCustomers] = useState<{ id: string; name: string; status?: string | null }[]>([]);
   const [services, setServices] = useState<{ id: string; name: string; price: string | number; status?: string | null }[]>([]);
@@ -1495,6 +1503,7 @@ function NewTailoringOrderForm({ currency, onClose, onCreated }: {
     if (total === null || !Number.isFinite(total)) { setSubmitError('Enter valid item amounts.'); return; }
     saveLock.current = true;
     setSaving(true);
+    onBusyChange(true);
     try {
       const response = await api('/tailoring/orders', { method: 'POST', body: JSON.stringify({
         customerId, garmentId, priority,
@@ -1510,21 +1519,20 @@ function NewTailoringOrderForm({ currency, onClose, onCreated }: {
     } finally {
       saveLock.current = false;
       setSaving(false);
+      onBusyChange(false);
     }
   }
 
-  const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm disabled:opacity-50';
+  const inputClass = 'min-w-0 w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm disabled:opacity-50';
   const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed';
   return (
-    <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="new-tailoring-title" aria-busy={loading || saving} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
-      <div className="flex items-start justify-between gap-4 mb-4">
-        <div><h3 id="new-tailoring-title" className="font-serif text-xl">New Tailoring Order</h3><p className="text-sm text-slate-500">Create an order in Received, then confirm it to begin production.</p></div>
-        <button type="button" aria-label="Close new tailoring order" disabled={saving} onClick={onClose} className={buttonClass}><X size={16} /></button>
-      </div>
+    <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="new-tailoring-title" aria-busy={loading || saving} className="min-w-0 outline-none">
+      <p id="new-tailoring-title" className="mb-6 text-sm text-slate-500">Four simple sections, one submission. Your new order starts in Received.</p>
       {loading && <p role="status" className="text-sm text-slate-500">Loading customers, services and garments…</p>}
       {loadError && <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm"><p>{loadError}</p><button type="button" disabled={loading} onClick={() => setLoadAttempt(attempt => attempt + 1)} className={`${buttonClass} mt-2`}>Retry Loading</button></div>}
       {!loading && !loadError && <form onSubmit={submit} className="space-y-4">
-        <fieldset disabled={saving} className="space-y-4">
+        <fieldset disabled={saving} className="space-y-6">
+          <section aria-labelledby="new-order-customer-heading"><h3 id="new-order-customer-heading" className="font-semibold text-sm mb-4"><span className="text-brand-500 mr-2">01</span> Customer &amp; Garment</h3>
           <div className="grid sm:grid-cols-2 gap-4">
             <div><label htmlFor="new-tailoring-customer" className="block text-sm font-medium mb-1">Customer *</label>
               <select id="new-tailoring-customer" required value={customerId} onChange={e => selectCustomer(e.target.value)} className={inputClass}><option value="">Select customer</option>{customers.map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}</select>
@@ -1538,11 +1546,12 @@ function NewTailoringOrderForm({ currency, onClose, onCreated }: {
               {customerGarments.length === 1 && <p className="mt-2 text-xs text-slate-500">Only garment automatically selected.</p>}
             </div>
           </div>
-          <div className="space-y-3">
-            <h4 className="font-semibold text-sm">Service items *</h4>
+          </section>
+          <section aria-labelledby="new-order-services-heading" className="space-y-3 border-t border-slate-100 pt-5">
+            <h3 id="new-order-services-heading" className="font-semibold text-sm"><span className="text-brand-500 mr-2">02</span> Services</h3>
             {!services.length && <p className="text-sm text-slate-500">No active services available. Add a service in the Services section.</p>}
-            {items.map((item, index) => <div key={item.key} className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 rounded-xl border border-slate-200 p-4 items-end">
-              <div><label htmlFor={`new-service-${item.key}`} className="block text-sm font-medium mb-1">Service {index + 1} *</label>
+            {items.map((item, index) => <div key={item.key} className="grid grid-cols-2 gap-3 border-b border-slate-100 py-4 items-end">
+              <div className="col-span-2 min-w-0"><label htmlFor={`new-service-${item.key}`} className="block text-sm font-medium mb-1">Service {index + 1} *</label>
                 <select id={`new-service-${item.key}`} required value={item.serviceId} onChange={e => {
                   const service = services.find(candidate => candidate.id === e.target.value);
                   updateItem(item.key, { serviceId: e.target.value, quantity: '1', unitPrice: service ? String(service.price) : '' });
@@ -1558,21 +1567,46 @@ function NewTailoringOrderForm({ currency, onClose, onCreated }: {
               <p className="text-sm font-semibold">Total: <output aria-label="Order total">{total !== null && Number.isFinite(total) ? formatMoney(total, currency) : '—'}</output></p>
             </div>
             <p className="text-xs text-slate-500">Totals are recalculated by the server when the order is created.</p>
-          </div>
+          </section>
+          <section aria-labelledby="new-order-delivery-heading" className="border-t border-slate-100 pt-5"><h3 id="new-order-delivery-heading" className="font-semibold text-sm mb-4"><span className="text-brand-500 mr-2">03</span> Delivery &amp; Priority</h3>
           <div className="grid sm:grid-cols-2 gap-4">
             <div><label htmlFor="new-tailoring-date" className="block text-sm font-medium mb-1">Delivery Date</label><input id="new-tailoring-date" type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className={inputClass} /></div>
             <div><label htmlFor="new-tailoring-priority" className="block text-sm font-medium mb-1">Priority</label><select id="new-tailoring-priority" value={priority} onChange={e => setPriority(e.target.value)} className={inputClass}>{['low', 'normal', 'high', 'urgent'].map(value => <option key={value} value={value}>{formatStatus(value)}</option>)}</select></div>
           </div>
-          <div><label htmlFor="new-tailoring-notes" className="block text-sm font-medium mb-1">Notes (optional)</label><textarea id="new-tailoring-notes" rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} /></div>
+          <div className="mt-4"><label htmlFor="new-tailoring-notes" className="block text-sm font-medium mb-1">Notes (optional)</label><textarea id="new-tailoring-notes" rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={inputClass} /></div>
+          </section>
+          <section aria-labelledby="new-order-review-heading" className="border-t border-slate-100 pt-5">
+            <h3 id="new-order-review-heading" className="font-semibold text-sm mb-3"><span className="text-brand-500 mr-2">04</span> Review</h3>
+            <dl className="grid grid-cols-2 gap-3 text-sm"><div><dt className="text-xs text-slate-500">Customer</dt><dd>{customers.find(customer => customer.id === customerId)?.name || 'Not selected'}</dd></div><div><dt className="text-xs text-slate-500">Garment</dt><dd>{customerGarments.find(garment => garment.id === garmentId)?.name || 'Not selected'}</dd></div><div><dt className="text-xs text-slate-500">Delivery</dt><dd>{deliveryDate ? formatDate(deliveryDate) : 'Set when confirming'}</dd></div><div><dt className="text-xs text-slate-500">Priority</dt><dd>{formatStatus(priority)}</dd></div></dl>
+            <ul className="mt-4 divide-y divide-slate-100">{items.map(item => <li key={item.key} className="flex justify-between gap-4 py-2 text-sm"><span>{services.find(service => service.id === item.serviceId)?.name || 'Select a service'} × {item.quantity || '—'}</span><span className="font-medium">{lineTotal(item) === null ? '—' : formatMoney(lineTotal(item), currency)}</span></li>)}</ul>
+            <div className="flex justify-between border-t border-slate-200 pt-3 text-sm font-semibold"><span>Order total</span><span>{total !== null && Number.isFinite(total) ? formatMoney(total, currency) : '—'}</span></div>
+          </section>
         </fieldset>
         {submitError && <p role="alert" className="p-3 bg-red-50 text-red-700 rounded-lg text-sm">{submitError}</p>}
-        <div className="flex gap-2">
+        <div className="sticky bottom-0 z-10 -mx-5 sm:-mx-6 -mb-6 px-5 sm:px-6 py-4 bg-white border-t border-slate-200 flex flex-wrap gap-2">
           <button type="submit" disabled={saving || !customerId || !garmentId || !services.length} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Creating…' : 'Create Tailoring Order'}</button>
           <button type="button" disabled={saving} onClick={onClose} className={buttonClass}>Cancel</button>
         </div>
       </form>}
     </div>
   );
+}
+
+function productionTotal(row: ProductionOrder, currency: string) {
+  return row.order?.items ? formatMoney(row.order.items.reduce((sum, item) => sum + Number(item.total || 0), 0), currency) : '—';
+}
+
+function ProductionStatus({ status }: { status: string }) {
+  const color = status === 'cancelled' ? 'bg-red-50 text-red-700' : ['ready', 'delivered'].includes(status) ? 'bg-emerald-50 text-emerald-700' : status === 'quality_check' ? 'bg-amber-50 text-amber-800' : status === 'received' ? 'bg-slate-100 text-slate-600' : 'bg-brand-50 text-brand-700';
+  return <span className={`inline-block rounded-lg px-2 py-1 text-xs font-semibold leading-snug ${color}`}>{formatStatus(status)}</span>;
+}
+
+function ProductionStepper({ status }: { status: string }) {
+  const current = productionStages.findIndex(stage => stage === status);
+  if (status === 'cancelled') return <p className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">Cancelled · terminal state. This order is view-only.</p>;
+  return <ol aria-label="Order progress" className="grid grid-cols-3 gap-x-3 gap-y-4">{productionStages.map((stage, index) => <li key={stage} aria-current={index === current ? 'step' : undefined} className={`flex items-start gap-2 text-xs ${index === current ? 'text-brand-900 font-bold' : index < current ? 'text-emerald-700' : 'text-slate-500'}`}>
+    <span aria-hidden="true" className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-xs ${index === current ? 'bg-brand-900 text-white' : index < current ? 'bg-emerald-50' : 'bg-slate-100 text-slate-600'}`}>{index < current ? <CheckCircle size={13} /> : index + 1}</span><span className="pt-0.5">{formatStatus(stage)}<span className="sr-only">{index === current ? ', current' : index < current ? ', completed' : ', upcoming'}</span></span>
+  </li>)}</ol>;
 }
 
 function ProductionModule({ rows, loading, error, refresh, currency }: {
@@ -1582,6 +1616,11 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   refresh: () => Promise<void>;
   currency: string;
 }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [createSaving, setCreateSaving] = useState(false);
+  const [filters, setFilters] = useState<ProductionFilters>({ ...emptyProductionFilters });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [showNewOrder, setShowNewOrder] = useState(false);
   const [panel, setPanel] = useState<{ row: ProductionOrder; action: ProductionAction } | null>(null);
   const [template, setTemplate] = useState<ProductionTemplate | null>(null);
@@ -1720,14 +1759,14 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
 
   function actions(row: ProductionOrder): ProductionAction[] {
     switch (row.status) {
-      case 'received': return [{ kind: 'confirm', title: 'Confirm' }];
+      case 'received': return [{ kind: 'confirm', title: 'Confirm Order' }];
       case 'confirmed': return [{ kind: 'measurement', title: 'Take Measurement' }];
       case 'measurement': return row.staffId ? [{ kind: 'status', title: 'Start Cutting', status: 'cutting' }] : [];
       case 'cutting': return [{ kind: 'status', title: 'Move to Stitching', status: 'stitching' }];
       case 'stitching': return [{ kind: 'status', title: 'Move to Finishing', status: 'finishing' }];
       case 'finishing': return [{ kind: 'status', title: 'Send to Quality Check', status: 'quality_check' }];
       case 'quality_check': return [
-        { kind: 'qc', title: 'QC Pass' },
+        { kind: 'qc', title: 'Pass QC' },
         { kind: 'qc', title: 'Send Back to Stitching', returnTo: 'stitching' },
         { kind: 'qc', title: 'Send Back to Finishing', returnTo: 'finishing' },
       ];
@@ -1746,24 +1785,77 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const inputClass = 'w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-sm';
   const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-brand-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
 
+  const selected = rows.find(row => row.id === selectedId);
+  const filteredRows = filterProductionOrders(rows, filters);
+  const pageRows = paginateProductionOrders(filteredRows, page, pageSize);
+  const staffOptions = Array.from(new Map(rows.filter(row => row.staffId).map(row => [row.staffId!, { id: row.staffId!, name: row.staff?.user?.name || 'Assigned staff' }])).values());
+  const hasFilters = Object.keys(emptyProductionFilters).some(key => filters[key as keyof ProductionFilters] !== emptyProductionFilters[key as keyof ProductionFilters]);
+  const filterClass = 'min-w-0 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-normal text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-200';
+  function changeFilter(key: keyof ProductionFilters, value: string) { setFilters(previous => ({ ...previous, [key]: value })); setPage(1); }
+  function clearFilters() { setFilters({ ...emptyProductionFilters }); setPage(1); }
+  function viewOrder(id: string) { setSelectedId(id); setNotice(''); setActionError(''); setPanel(null); }
+  function closeDrawer() {
+    if (requestLock.current || createSaving) return;
+    closePanel(); setSelectedId(null); setShowNewOrder(false);
+  }
+
   return (
-    <ModuleWrapper title="Production" description="Confirm, measure and track tailoring orders through delivery." loading={loading} error={error} refresh={() => { if (!requestLock.current && !showNewOrder) void refresh(); }} count={rows.length}>
-      <div className="flex justify-end">
-        <button type="button" disabled={busy || !!panel || showNewOrder} onClick={() => { setNotice(''); setShowNewOrder(true); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">+ New Tailoring Order</button>
-      </div>
-      {showNewOrder && <NewTailoringOrderForm currency={currency} onClose={() => setShowNewOrder(false)} onCreated={async () => {
-        setShowNewOrder(false);
-        setNotice('Tailoring order created. Status: Received.');
-        await refresh();
-      }} />}
-      {!panel && actionError && <p role="alert" className="p-4 rounded-xl bg-red-50 text-red-700 text-sm">{actionError}</p>}
-      {notice && <p role="status" className="p-4 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
-      {panel && (
-        <div ref={panelRef} tabIndex={-1} role="region" aria-labelledby="production-panel-title" aria-busy={busy} className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm outline-none">
-          <div className="flex justify-between items-start gap-4 mb-4">
-            <div><h3 id="production-panel-title" className="font-serif text-xl">{panel.action.title}</h3><p className="text-sm text-slate-500">{panel.row.order?.orderNumber} · {panel.row.customer?.name} {panel.row.garment ? `· ${panel.row.garment.name}` : ''}</p></div>
-            <button type="button" onClick={closePanel} disabled={busy} aria-label="Close action panel" className={buttonClass}><X size={16} /></button>
+    <>
+      <ModuleWrapper title="Production" description="A clear view of your work. Open an order to manage its next step." loading={loading} error={error} refresh={() => { if (!requestLock.current && !showNewOrder) void refresh(); }}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">{filteredRows.length} matching orders · {rows.filter(row => row.status === 'ready').length} ready for delivery</p>
+          <button data-workflow-return-focus type="button" disabled={busy || !!selectedId || showNewOrder} onClick={() => { setNotice(''); setActionError(''); setShowNewOrder(true); }} className="inline-flex justify-center items-center gap-2 px-4 py-2.5 bg-brand-900 text-white rounded-xl text-sm font-semibold hover:bg-brand-800 disabled:opacity-50"><Plus size={16} /> New Tailoring Order</button>
+        </div>
+        {!selectedId && !showNewOrder && notice && <p role="status" className="p-3 rounded-xl bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
+        <section aria-label="Production filters" className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <label className="col-span-2 sm:col-span-1 min-w-0 text-xs font-semibold text-slate-500">Search orders<div className="relative mt-1"><Search size={16} className="absolute left-3 top-3 text-slate-400" /><input type="search" value={filters.search} onChange={e => changeFilter('search', e.target.value)} placeholder="Order, customer or garment" className={`${filterClass} pl-9`} /></div></label>
+            <label className="min-w-0 text-xs font-semibold text-slate-500">Status<select value={filters.status} onChange={e => changeFilter('status', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All statuses</option>{[...productionStages, 'cancelled'].map(status => <option key={status} value={status}>{formatStatus(status)}</option>)}</select></label>
+            <label className="min-w-0 text-xs font-semibold text-slate-500">Assigned staff<select value={filters.staff} onChange={e => changeFilter('staff', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All staff</option><option value="unassigned">Unassigned</option>{staffOptions.map(person => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+            <label className="min-w-0 text-xs font-semibold text-slate-500">Priority<select value={filters.priority} onChange={e => changeFilter('priority', e.target.value)} className={`${filterClass} mt-1`}><option value="all">All priorities</option>{['low', 'normal', 'high', 'urgent'].map(priority => <option key={priority} value={priority}>{formatStatus(priority)}</option>)}</select></label>
           </div>
+          <div className="flex flex-wrap gap-2" aria-label="Quick status filters">
+            {['all', ...productionStages.filter(stage => stage !== 'delivered')].map(status => <button key={status} type="button" aria-pressed={filters.status === status} onClick={() => changeFilter('status', status)} className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${filters.status === status ? 'bg-brand-900 text-white border-brand-900' : 'bg-white text-slate-600 border-slate-200 hover:border-brand-400'}`}>
+              {status === 'all' ? 'All' : status === 'quality_check' ? 'QC' : formatStatus(status)} <span className={filters.status === status ? 'ml-1 text-brand-200' : 'ml-1 text-slate-400'}>{status === 'all' ? rows.length : rows.filter(row => row.status === status).length}</span>
+            </button>)}
+            {hasFilters && <button type="button" onClick={clearFilters} className="text-xs font-medium text-brand-700 underline px-2">Clear filters</button>}
+          </div>
+        </section>
+        {filteredRows.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center"><Package className="mx-auto mb-3 text-slate-400" size={28} /><h3 className="font-semibold">{rows.length ? 'No matching orders' : 'Your production queue is empty'}</h3><p className="text-sm text-slate-500 mt-1">{rows.length ? 'Try a different search or clear your filters.' : 'Create your first tailoring order to begin.'}</p>{hasFilters && <button onClick={clearFilters} className="mt-4 text-sm font-semibold text-brand-700 underline">Reset filters</button>}</div> : <>
+          <div className="hidden md:block rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <table className="w-full table-fixed text-sm" aria-label="Tailoring production orders">
+              <thead><tr className="border-b border-slate-200 text-xs text-slate-500 bg-slate-50">
+                <th className="w-28 px-3 py-3 text-left font-semibold rounded-tl-2xl">Order</th><th className="px-3 py-3 text-left font-semibold">Customer / Garment</th><th className="w-24 px-3 py-3 text-left font-semibold">Due Date</th><th className="w-28 px-3 py-3 text-left font-semibold">Status</th><th className="hidden xl:table-cell w-28 px-3 py-3 text-left font-semibold">Assigned Staff</th><th className="hidden xl:table-cell w-24 px-3 py-3 text-right font-semibold">Total</th><th className="w-20 px-3 py-3 text-right font-semibold rounded-tr-2xl">Actions</th>
+              </tr></thead>
+              <tbody className="divide-y divide-slate-100">{pageRows.rows.map(row => <tr key={row.id} className="hover:bg-slate-50/70">
+                <td className="px-3 py-4"><p title={row.order?.orderNumber} className="truncate font-semibold text-brand-800">{row.order?.orderNumber || '—'}</p></td>
+                <td className="px-3 py-4"><p className="truncate font-medium" title={row.customer?.name}>{row.customer?.name || '—'}</p><p className="truncate text-xs text-slate-500 mt-1" title={row.garment?.name}>{row.garment?.name || 'No garment'}</p></td>
+                <td className="px-3 py-4 text-xs text-slate-600 break-words">{formatDate(row.deliveryDate || row.order?.expectedDate)}</td>
+                <td className="px-3 py-4"><ProductionStatus status={row.status} /></td>
+                <td className="hidden xl:table-cell px-3 py-4"><p className="truncate text-xs text-slate-600" title={row.staff?.user?.name}>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</p></td>
+                <td className="hidden xl:table-cell px-3 py-4 text-right text-xs font-medium break-words">{productionTotal(row, currency)}</td>
+                <td className="px-3 py-4 text-right"><button type="button" onClick={() => viewOrder(row.id)} aria-label={`View order ${row.order?.orderNumber || row.id}`} className="rounded-lg px-3 py-2 text-xs font-semibold text-brand-700 bg-brand-50 hover:bg-brand-100 focus-visible:outline-2 focus-visible:outline-brand-500">View</button></td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <div className="grid gap-3 md:hidden" aria-label="Production order cards">{pageRows.rows.map(row => <article key={row.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex justify-between items-start gap-3"><h3 className="min-w-0 truncate font-semibold text-brand-800" title={row.order?.orderNumber}>{row.order?.orderNumber || 'Order'}</h3><ProductionStatus status={row.status} /></div>
+            <p className="mt-3 font-medium break-words">{row.customer?.name || '—'}</p><p className="text-sm text-slate-500 break-words">{row.garment?.name || 'No garment'}</p>
+            <dl className="grid grid-cols-2 gap-3 text-xs my-4"><div><dt className="text-slate-500">Due date</dt><dd className="mt-1 font-medium">{formatDate(row.deliveryDate || row.order?.expectedDate)}</dd></div><div><dt className="text-slate-500">Total</dt><dd className="mt-1 font-medium break-words">{productionTotal(row, currency)}</dd></div><div className="col-span-2"><dt className="text-slate-500">Assigned staff</dt><dd className="mt-1 break-words">{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</dd></div></dl>
+            <button type="button" onClick={() => viewOrder(row.id)} aria-label={`View order ${row.order?.orderNumber || row.id}`} className="w-full rounded-lg py-2.5 bg-brand-50 text-brand-800 text-sm font-semibold hover:bg-brand-100">View Order</button>
+          </article>)}</div>
+        </>}
+        <nav aria-label="Production pagination" className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+          <p aria-live="polite">Showing {pageRows.start}–{pageRows.end} of {filteredRows.length}</p>
+          <div className="flex flex-wrap items-center gap-3"><label className="text-xs">Per page <select aria-label="Orders per page" value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }} className="ml-1 rounded-lg border border-slate-200 bg-white px-2 py-2">{[10, 20, 50].map(size => <option key={size} value={size}>{size}</option>)}</select></label><button type="button" aria-label="Previous page" disabled={pageRows.page === 1} onClick={() => setPage(pageRows.page - 1)} className={buttonClass}><ChevronLeft size={16} /></button><span className="text-xs">{pageRows.page} / {pageRows.totalPages}</span><button type="button" aria-label="Next page" disabled={pageRows.page === pageRows.totalPages} onClick={() => setPage(pageRows.page + 1)} className={buttonClass}><ChevronRight size={16} /></button></div>
+        </nav>
+      </ModuleWrapper>
+      <WorkflowDrawer open={!!selectedId || showNewOrder} title={showNewOrder ? 'New Tailoring Order' : panel?.action.title || selected?.order?.orderNumber || 'Order details'} subtitle={showNewOrder ? 'Create once. Follow every step in Production.' : selected ? `${selected.customer?.name || 'Customer'} · ${selected.garment?.name || 'No garment'}` : undefined} busy={busy || createSaving} onClose={closeDrawer}>
+        {showNewOrder ? <NewTailoringOrderForm currency={currency} onBusyChange={setCreateSaving} onClose={closeDrawer} onCreated={async () => { setShowNewOrder(false); setCreateSaving(false); setNotice('Tailoring order created. Status: Received.'); await refresh(); }} /> : <>
+          {notice && <p role="status" className="mb-5 p-3 rounded-lg bg-emerald-50 text-emerald-800 text-sm">{notice}</p>}
+          {loading ? <p role="status" className="py-12 text-center text-slate-500">Refreshing order from the server…</p> : error ? <div role="alert" className="space-y-3 p-4 rounded-xl bg-red-50 text-red-700"><p>{error}</p><button disabled={busy} type="button" onClick={() => void refresh()} className={buttonClass}>Retry refresh</button></div> : !selected ? <p className="py-8 text-slate-500">This order is no longer available. Close the drawer and refresh your list.</p> : panel ? (<div ref={panelRef} tabIndex={-1} role="region" aria-label={panel.action.title} aria-busy={busy} className="min-w-0 outline-none">
+          <button type="button" onClick={closePanel} disabled={busy} className="inline-flex items-center gap-1 mb-5 text-sm font-medium text-brand-700 disabled:opacity-50"><ChevronLeft size={16} /> Back to order</button>
+          {['viewMeasurement', 'editMeasurement', 'measurement'].includes(panel.action.kind) && <p className="text-sm text-slate-500 mb-4">{panel.action.kind === 'viewMeasurement' ? (panel.row.status === 'measurement' ? 'View mode · values are read-only.' : 'Locked snapshot · editing is only available during Measurement. View only.') : panel.action.kind === 'editMeasurement' ? 'Edit mode · update this order’s existing snapshot.' : 'New measurement · use the values from your fitting.'}</p>}
           {preparing && <p role="status" className="text-sm text-slate-500">Loading {panel.action.kind === 'staff' ? 'staff' : 'measurement data'}…</p>}
           {actionError && <p role="alert" className="mb-4 p-3 rounded-lg bg-red-50 text-red-700 text-sm">{actionError}</p>}
           {!preparing && (
@@ -1785,7 +1877,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                   <div className="bg-slate-50 rounded-xl p-4"><h4 className="font-semibold">{template.template.name}</h4><p className="text-sm text-slate-500">Unit: {template.template.defaultUnit} · Template source: {formatStatus(template.source)}</p></div>
                   {groups.map((group, index) => <fieldset key={`${group.section}-${index}`} className="border border-slate-200 rounded-xl p-4">
                     <legend className="px-2 font-semibold text-sm">{group.section}</legend>
-                    <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">{group.fields.map(field => <label key={field.id} className="text-sm font-medium">
+                    <div className="grid sm:grid-cols-2 gap-4">{group.fields.map(field => <label key={field.id} className="text-sm font-medium">
                       {field.label || field.name} ({field.unit || template.template.defaultUnit}){field.required ? ' *' : ' (optional)'}
                       <input type={panel.action.kind === 'viewMeasurement' ? 'text' : 'number'} step="any" required={field.required} value={values[field.name] ?? ''} onChange={e => setValues(previous => ({ ...previous, [field.name]: e.target.value }))} className={`${inputClass} mt-1`} />
                     </label>)}</div>
@@ -1796,38 +1888,35 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                 {panel.action.kind === 'qc' && <p className="text-sm text-slate-600">{panel.action.returnTo ? `Return this order to ${formatStatus(panel.action.returnTo)} for rework.` : 'Pass quality check and mark this order Ready. Delivery is recorded separately.'}</p>}
                 {['confirm', 'status', 'qc'].includes(panel.action.kind) && <label className="block text-sm font-medium">Notes (optional)<textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)} className={`${inputClass} mt-1`} /></label>}
               </fieldset>
-              <div className="flex flex-wrap gap-2">
+              <div className="sticky bottom-0 z-10 -mx-5 sm:-mx-6 -mb-6 px-5 sm:px-6 py-4 bg-white border-t border-slate-200 flex flex-wrap gap-2">
                 {panel.action.kind !== 'viewMeasurement' && <button type="submit" disabled={busy || (['measurement', 'editMeasurement'].includes(panel.action.kind) && !template) || (panel.action.kind === 'editMeasurement' && !measurementEditable)} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{saving ? 'Saving…' : ['measurement', 'editMeasurement'].includes(panel.action.kind) ? 'Save Measurement' : panel.action.kind === 'staff' ? 'Save Assignment' : panel.action.title}</button>}
                 {actionError && ['staff', 'measurement', 'viewMeasurement', 'editMeasurement'].includes(panel.action.kind) && <button type="button" disabled={busy} onClick={() => openPanel(panel.row, panel.action)} className={buttonClass}>Reload {panel.action.kind === 'staff' ? 'Staff' : 'Measurement'}</button>}
-                <button type="button" disabled={busy} onClick={closePanel} className={buttonClass}>Close</button>
+                <button type="button" disabled={busy} onClick={closePanel} className={buttonClass}>{panel.action.kind === 'viewMeasurement' ? 'Back to order' : 'Cancel'}</button>
               </div>
             </form>
           )}
-        </div>
-      )}
-      <DataTable headers={['Order', 'Customer', 'Service', 'Expected Date', 'Priority', 'Total', 'Status', 'Assigned Staff', 'Actions']}
-        rows={rows.map(row => {
-          const terminal = ['delivered', 'cancelled'].includes(row.status);
-          const knownActive = ['received', 'confirmed', 'measurement', 'cutting', 'stitching', 'finishing', 'quality_check', 'ready'].includes(row.status);
-          return [
-            row.order?.orderNumber || '-', row.customer?.name || '-',
-            row.order?.items?.map(item => item.service?.name).filter(Boolean).join(', ') || '-',
-            formatDate(row.deliveryDate || row.order?.expectedDate), formatStatus(row.priority || row.order?.priority),
-            row.order?.items ? formatMoney(row.order.items.reduce((total, item) => total + Number(item.total || 0), 0), currency) : '-',
-            <div>{formatStatus(row.status)}{row.measurementId && <div className="text-xs text-slate-500 mt-1" title={row.measurementId}>Measurement ID: {row.measurementId}</div>}</div>,
-            <div className="space-y-2"><div>{row.staff?.user?.name || (row.staffId ? 'Assigned staff' : 'Unassigned')}</div>{!terminal && knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'staff', title: row.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{row.staffId ? 'Change / Unassign' : 'Assign Staff'}</button>}</div>,
-            <div className="flex flex-wrap gap-2 max-w-sm min-w-48">
-              {row.measurementId && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'viewMeasurement', title: 'View Measurement' })} className={buttonClass}>View Measurement</button>}
-              {row.measurementId && row.status === 'measurement' && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'editMeasurement', title: 'Edit Measurement' })} className={buttonClass}>Edit Measurement</button>}
-              {row.measurementId && row.status !== 'measurement' && <span className="text-xs text-slate-500">Measurement locked</span>}
-              {actions(row).map(action => <button key={action.title} disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, action)} className={buttonClass}>{action.title}</button>)}
-              {knownActive && <button disabled={busy || !!panel || showNewOrder} onClick={() => openPanel(row, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className={`${buttonClass} text-red-600`}>Cancel</button>}
-              {terminal && <span className="text-slate-400">No workflow actions</span>}
-            </div>,
-          ];
-        })}
-      />
-    </ModuleWrapper>
+        </div>) : <div className="space-y-7">
+            {!panel && actionError && <p role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{actionError}</p>}
+            <section aria-labelledby="order-overview"><h3 id="order-overview" className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-4">Overview</h3><dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-5 gap-y-5 text-sm">
+              <div><dt className="text-xs text-slate-500 mb-1">Status</dt><dd><ProductionStatus status={selected.status} /></dd></div><div><dt className="text-xs text-slate-500 mb-1">Due date</dt><dd>{formatDate(selected.deliveryDate || selected.order?.expectedDate)}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Priority</dt><dd>{formatStatus(selected.priority || selected.order?.priority || 'normal')}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Assigned staff</dt><dd>{selected.staff?.user?.name || (selected.staffId ? 'Assigned staff' : 'Unassigned')}</dd></div><div><dt className="text-xs text-slate-500 mb-1">Total</dt><dd className="font-semibold">{productionTotal(selected, currency)}</dd></div>
+            </dl></section>
+            <section aria-labelledby="order-workflow" className="border-t border-slate-100 pt-5"><h3 id="order-workflow" className="font-semibold text-sm mb-4">Workflow</h3><ProductionStepper status={selected.status} />
+              <div className="flex flex-wrap gap-2 mt-5">
+                {selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'staff', title: selected.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{selected.staffId ? 'Change Staff' : 'Assign Staff'}</button>}
+                {actions(selected).map((action, index) => <button key={action.title} type="button" disabled={busy} onClick={() => openPanel(selected, action)} className={index === 0 ? 'px-4 py-2.5 rounded-lg bg-brand-900 text-white text-sm font-semibold hover:bg-brand-800 disabled:opacity-50' : buttonClass}>{action.title}</button>)}
+              </div>
+              {selected.status === 'measurement' && !selected.staffId && <p className="mt-2 text-xs text-slate-500">Assign active staff before starting Cutting.</p>}
+            </section>
+            <section aria-labelledby="order-measurement" className="border-t border-slate-100 pt-5"><h3 id="order-measurement" className="font-semibold text-sm mb-2">Measurement</h3>
+              {selected.measurementId ? <><p className="text-xs text-slate-500 break-all mb-3">Snapshot ID: {selected.measurementId}</p>{selected.status !== 'measurement' && <p className="flex items-center gap-2 text-xs text-slate-500 mb-3"><Lock size={14} /> Locked snapshot · view only</p>}<div className="flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'viewMeasurement', title: 'View Measurement' })} className={buttonClass}>View Measurement</button>{selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'editMeasurement', title: 'Edit Measurement' })} className={buttonClass}>Edit Measurement</button>}</div></> : <p className="text-sm text-slate-500">No measurement linked to this order.{['received', 'confirmed'].includes(selected.status) && ' Take measurements after confirming the order.'}</p>}
+            </section>
+            <section aria-labelledby="order-services" className="border-t border-slate-100 pt-5"><h3 id="order-services" className="font-semibold text-sm mb-3">Services</h3><ul className="divide-y divide-slate-100">{selected.order?.items?.map((item, index) => <li key={index} className="flex justify-between gap-4 py-3 text-sm"><div className="min-w-0"><p className="font-medium break-words">{item.service?.name || 'Service'}</p><p className="text-xs text-slate-500 mt-1">{item.quantity ?? '—'} × {item.unitPrice != null ? formatMoney(item.unitPrice, currency) : '—'}</p></div><p className="shrink-0 font-medium">{formatMoney(item.total, currency)}</p></li>)}</ul>{!selected.order?.items?.length && <p className="text-sm text-slate-500">No service items available.</p>}</section>
+            <section aria-labelledby="order-notes" className="border-t border-slate-100 pt-5"><h3 id="order-notes" className="font-semibold text-sm mb-2">Notes</h3><p className="whitespace-pre-wrap text-sm text-slate-600">{selected.notes || selected.order?.notes || 'No notes added.'}</p></section>
+            {productionStages.some(stage => stage === selected.status) && !['delivered', 'cancelled'].includes(selected.status) && <section aria-labelledby="order-danger" className="border-t border-red-100 pt-5"><h3 id="order-danger" className="text-sm font-semibold text-red-700">Cancel order</h3><p className="text-xs text-slate-500 my-2">Cancellation is permanent. This order cannot return to production.</p><button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'status', title: 'Cancel Order', status: 'cancelled' })} className="px-3 py-2 rounded-lg border border-red-200 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50">Cancel Order</button></section>}
+          </div>}
+        </>}
+      </WorkflowDrawer>
+    </>
   );
 }
 
@@ -1923,14 +2012,14 @@ function StaffModule({
   const handleDelete = async (id: string) => { if (confirm('Deactivate this staff?')) { await api(`/staff/${id}`, { method: 'DELETE' }); await refresh(); } };
   return (
     <ModuleWrapper title="Staff" description="Business staff and assigned roles." loading={loading} error={error} refresh={() => { if (!showOnboarding) void refresh(); }} count={rows.length}>
-      <div className="mb-4 flex gap-2 flex-wrap"><button disabled={showOnboarding} onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">+ Add Staff</button><button disabled={saving || showOnboarding} onClick={() => { setShowForm(false); setShowOnboarding(true); setNotice(''); }} className="px-4 py-2 border border-brand-900 text-brand-900 rounded-xl text-sm font-medium disabled:opacity-50">+ Create New User</button></div>
+      <div className="mb-4 flex gap-2 flex-wrap"><button disabled={showOnboarding || saving} onClick={() => { setShowForm(true); setEditId(null); resetForm(); setFormErrors({}); }} className="px-4 py-2 bg-brand-900 text-white rounded-xl font-medium text-sm">Add Existing User as Staff</button><button disabled={saving || showOnboarding} onClick={() => { setShowForm(false); setShowOnboarding(true); setNotice(''); }} className="px-4 py-2 border border-brand-900 text-brand-900 rounded-xl text-sm font-medium disabled:opacity-50">Create New User &amp; Staff</button></div>
       {notice && <p role="status" className="p-3 bg-emerald-50 text-emerald-800 rounded-xl text-sm">{notice}</p>}
       {showOnboarding && <StaffOnboardingForm onClose={() => setShowOnboarding(false)} onCreated={async user => {
         setUsers(previous => [...previous, user]); setShowOnboarding(false); setNotice('User, tenant membership and staff profile created.'); await refresh();
       }} />}
       {showForm && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 mb-5 shadow-sm">
-          <h3 className="font-semibold mb-3">{editId ? 'Edit Staff' : 'Add Staff — Existing User'}</h3>
+          <h3 className="font-semibold mb-3">{editId ? 'Edit Staff' : 'Add Existing User as Staff'}</h3>
           {!editId && <p className="text-sm text-slate-500 mb-3">Choose an existing tenant user below, or use Create New User to create their login and staff profile together.</p>}
           <div className="grid md:grid-cols-3 gap-3 mb-3">
             <select disabled={!!editId} value={form.userId} onChange={e=>setForm({...form,userId:e.target.value})} className={`w-full px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 ${editId?'opacity-60':''}`}><option value="">Select user</option>{users.map((u:any)=><option key={u.id} value={u.id}>{u.name||u.email||u.id}</option>)}</select>
