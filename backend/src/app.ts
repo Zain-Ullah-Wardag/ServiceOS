@@ -35,6 +35,8 @@ import {
 
 import prisma from './lib/prisma.js';
 
+import { Prisma } from '@prisma/client';
+
 /* =========================================================
    LOCAL VALIDATORS
 ========================================================= */
@@ -1400,6 +1402,7 @@ app.post(
     try {
       const { invoiceId, customerId, amount, method, reference } = req.body;
 
+      // Tenant-scoped lookup: invoices from other tenants behave as not found.
       const invoice = await prisma.invoice.findFirst({
         where: {
           id: invoiceId,
@@ -1444,34 +1447,92 @@ app.post(
         });
       }
 
-      const amountNumber = Number(amount);
+      // amount > 0 is enforced by paymentCreateSchema; keep decimal-safe.
+      const amountDecimal = new Prisma.Decimal(String(amount));
 
-      const payment = await prisma.$transaction(async (tx: any) => {
+      const payment = await prisma.$transaction(async (tx) => {
+        // Lock the invoice row to serialize concurrent payment recordings.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM invoices
+          WHERE id = ${invoiceId} AND tenant_id = ${req.tenantId!}
+          FOR UPDATE
+        `;
+
+        if (locked.length !== 1) {
+          throw new PaymentRecordError(
+            404,
+            'NOT_FOUND',
+            'Invoice not found',
+          );
+        }
+
+        // Re-read the authoritative invoice state under the lock.
+        const current = await tx.invoice.findFirst({
+          where: {
+            id: invoiceId,
+            tenantId: req.tenantId!,
+          },
+        });
+
+        if (!current) {
+          throw new PaymentRecordError(
+            404,
+            'NOT_FOUND',
+            'Invoice not found',
+          );
+        }
+
+        if (current.customerId !== customerId) {
+          throw new PaymentRecordError(
+            400,
+            'INVALID_CUSTOMER',
+            'Invoice does not belong to this customer',
+          );
+        }
+
+        if (!amountDecimal.gt(0)) {
+          throw new PaymentRecordError(
+            400,
+            'INVALID_AMOUNT',
+            'Amount must be greater than zero.',
+          );
+        }
+
+        if (amountDecimal.gt(current.balance)) {
+          throw new PaymentRecordError(
+            409,
+            'PAYMENT_EXCEEDS_BALANCE',
+            'Amount exceeds the outstanding balance.',
+          );
+        }
+
         const createdPayment = await tx.payment.create({
           data: {
             tenantId: req.tenantId!,
             invoiceId,
             customerId,
-            amount: amountNumber,
+            amount: amountDecimal,
             method: method || 'cash',
             reference: reference || null,
             status: 'completed',
             paidAt: new Date(),
+            // Derived from the invoice, never trusted from the client.
+            orderId: current.orderId ?? null,
           },
         });
 
-        const newPaidAmount = Number(invoice.paidAmount) + amountNumber;
-        const newBalance = Number(invoice.balance) - amountNumber;
+        const newPaidAmount = current.paidAmount.plus(amountDecimal);
+        const newBalance = current.balance.minus(amountDecimal);
 
         await tx.invoice.update({
           where: {
-            id: invoice.id,
+            id: current.id,
           },
 
           data: {
             paidAmount: newPaidAmount,
             balance: newBalance,
-            status: newBalance <= 0 ? 'paid' : 'partially_paid',
+            status: newBalance.isZero() ? 'paid' : 'partially_paid',
           },
         });
 
@@ -1485,9 +1546,10 @@ app.post(
         entity: 'Payment',
         entityId: payment.id,
         metadata: {
-          amount: amountNumber,
+          amount: amount,
           method: method || 'cash',
           invoiceId,
+          orderId: invoice.orderId ?? null,
         },
       });
 
@@ -1496,6 +1558,13 @@ app.post(
         data: payment,
       });
     } catch (error) {
+      if (error instanceof PaymentRecordError) {
+        return res.status(error.status).json({
+          success: false,
+          error: { code: error.code, message: error.message },
+        });
+      }
+
       console.error('PAYMENT CREATE ERROR:', error);
 
       return res.status(500).json({
@@ -2141,6 +2210,339 @@ app.post(
     }
   },
 );
+/* =========================================================
+   TAILORING - ORDER ACCOUNTING (A7.2)
+========================================================= */
+
+class AccountingIntegrityError extends Error {
+  readonly status = 409;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountingIntegrityError';
+  }
+}
+
+class AccountingNotFoundError extends Error {
+  readonly status = 404;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AccountingNotFoundError';
+  }
+}
+
+class PaymentRecordError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PaymentRecordError';
+  }
+}
+
+/**
+ * Derive the authoritative order total from SUM(OrderItem.total).
+ * Uses Decimal-safe arithmetic only; never trusts client-provided totals.
+ */
+function sumOrderItemTotals(items: { total: unknown }[]) {
+  return items.reduce(
+    (sum, item) => sum.plus(new Prisma.Decimal(String(item.total))),
+    new Prisma.Decimal(0),
+  );
+}
+
+app.get(
+  '/api/v1/tailoring/orders/:id/accounting',
+  authMiddleware,
+  requirePermission('tailoring.read'),
+  requirePermission('invoices.read'),
+  async (req, res) => {
+    try {
+      const tailoringOrder = await prisma.tailoringOrder.findFirst({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId!,
+        },
+      });
+
+      if (!tailoringOrder) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Tailoring order not found',
+          },
+        });
+      }
+
+      const order = await prisma.order.findFirst({
+        where: {
+          id: tailoringOrder.orderId,
+          tenantId: req.tenantId!,
+        },
+        include: {
+          items: true,
+        },
+      });
+
+      if (!order) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Order not found',
+          },
+        });
+      }
+
+      const total = sumOrderItemTotals(order.items);
+
+      const invoices = await prisma.invoice.findMany({
+        where: {
+          tenantId: req.tenantId!,
+          orderId: order.id,
+        },
+      });
+
+      if (invoices.length > 1) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'ACCOUNTING_INTEGRITY_ERROR',
+            message:
+              'Multiple invoices exist for this order. Manual reconciliation required.',
+          },
+        });
+      }
+
+      const invoice = invoices[0] ?? null;
+
+      const payments = invoice
+        ? await prisma.payment.findMany({
+            where: {
+              tenantId: req.tenantId!,
+              invoiceId: invoice.id,
+            },
+            orderBy: [
+              { paidAt: 'asc' },
+              { id: 'asc' },
+            ],
+          })
+        : [];
+
+      return res.json({
+        success: true,
+        data: {
+          orderId: order.id,
+          tailoringOrderId: tailoringOrder.id,
+          orderNumber: order.orderNumber,
+          total,
+          invoice: invoice
+            ? {
+                id: invoice.id,
+                invoiceNumber: invoice.invoiceNumber,
+                total: invoice.total,
+                paidAmount: invoice.paidAmount,
+                balance: invoice.balance,
+                status: invoice.status,
+                issuedAt: invoice.issuedAt,
+              }
+            : null,
+          payments: payments.map((payment) => ({
+            id: payment.id,
+            amount: payment.amount,
+            method: payment.method,
+            reference: payment.reference,
+            status: payment.status,
+            paidAt: payment.paidAt,
+          })),
+        },
+      });
+    } catch (error) {
+      console.error('TAILORING ACCOUNTING READ ERROR:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Unable to load order accounting',
+        },
+      });
+    }
+  },
+);
+
+app.post(
+  '/api/v1/tailoring/orders/:id/accounting/invoice',
+  authMiddleware,
+  requirePermission('tailoring.read'),
+  requirePermission('invoices.create'),
+  async (req, res) => {
+    try {
+      const tailoringOrder = await prisma.tailoringOrder.findFirst({
+        where: {
+          id: req.params.id,
+          tenantId: req.tenantId!,
+        },
+      });
+
+      if (!tailoringOrder) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Tailoring order not found',
+          },
+        });
+      }
+
+      const preflightOrder = await prisma.order.findFirst({
+        where: {
+          id: tailoringOrder.orderId,
+          tenantId: req.tenantId!,
+        },
+      });
+
+      if (!preflightOrder) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Order not found',
+          },
+        });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        // Lock the parent order row to serialize concurrent ensure calls.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM orders
+          WHERE id = ${tailoringOrder.orderId} AND tenant_id = ${req.tenantId!}
+          FOR UPDATE
+        `;
+
+        if (locked.length !== 1) {
+          throw new AccountingNotFoundError('Order not found');
+        }
+
+        // Re-read authoritative state under the lock.
+        const order = await tx.order.findFirst({
+          where: {
+            id: tailoringOrder.orderId,
+            tenantId: req.tenantId!,
+          },
+          include: {
+            items: true,
+          },
+        });
+
+        if (!order) {
+          throw new AccountingNotFoundError('Order not found');
+        }
+
+        const invoices = await tx.invoice.findMany({
+          where: {
+            tenantId: req.tenantId!,
+            orderId: order.id,
+          },
+        });
+
+        if (invoices.length > 1) {
+          throw new AccountingIntegrityError(
+            'Multiple invoices exist for this order. Manual reconciliation required.',
+          );
+        }
+
+        // Idempotent: exactly one operational invoice already exists.
+        if (invoices.length === 1) {
+          return { invoice: invoices[0], created: false };
+        }
+
+        // Derive the authoritative total from OrderItem totals only.
+        const total = sumOrderItemTotals(order.items);
+
+        const invoice = await tx.invoice.create({
+          data: {
+            tenantId: req.tenantId!,
+            customerId: order.customerId,
+            orderId: order.id,
+            invoiceNumber: 'INV-' + Date.now(),
+            subtotal: total,
+            discount: new Prisma.Decimal(0),
+            tax: new Prisma.Decimal(0),
+            total,
+            paidAmount: new Prisma.Decimal(0),
+            balance: total,
+            status: 'issued',
+            issuedAt: new Date(),
+            dueAt: order.expectedDate ?? null,
+          },
+        });
+
+        return { invoice, created: true };
+      });
+
+      if (result.created) {
+        await auditLog({
+          tenantId: req.tenantId!,
+          userId: req.user!.id,
+          action: 'TAILORING_INVOICE_CREATED',
+          entity: 'Invoice',
+          entityId: result.invoice.id,
+          metadata: {
+            tailoringOrderId: tailoringOrder.id,
+            orderId: tailoringOrder.orderId,
+            invoiceId: result.invoice.id,
+          },
+        });
+
+        return res.status(201).json({
+          success: true,
+          data: result.invoice,
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: result.invoice,
+      });
+    } catch (error) {
+      if (error instanceof AccountingIntegrityError) {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'ACCOUNTING_INTEGRITY_ERROR',
+            message: error.message,
+          },
+        });
+      }
+
+      if (error instanceof AccountingNotFoundError) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: error.message,
+          },
+        });
+      }
+
+      console.error('TAILORING ACCOUNTING ENSURE INVOICE ERROR:', error);
+
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Unable to prepare order invoice',
+        },
+      });
+    }
+  },
+);
+
 app.use('/api/v1/tailoring/orders', tailoringOrderMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringWorkflowRoutes);
