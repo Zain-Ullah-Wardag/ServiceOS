@@ -37,6 +37,7 @@ import WorkflowDrawer from '../components/WorkflowDrawer';
 import IntakeCustomerGarment from '../components/IntakeCustomerGarment';
 import { createdRecord, intakeLineTotal, intakeOrderPayload, type IntakeCustomer, type IntakeGarment } from '../lib/intake';
 import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionStages, type ProductionFilters } from '../lib/productionView';
+import { deriveAccountingView, EMPTY_PAYMENT_HISTORY_TEXT, fullBalanceAmount, PAYMENT_METHODS, paymentHistoryLine, validatePaymentAmount, type AccountingData } from '../lib/accounting';
 
 /* =========================================================
    TYPES
@@ -1393,7 +1394,7 @@ type ProductionOrder = {
   deliveryDate?: string | null;
   priority?: string;
   notes?: string | null;
-  customer?: { name: string };
+  customer?: { id?: string; name: string };
   garment?: { name: string } | null;
   staff?: { user?: { name: string }; status?: string } | null;
   order?: {
@@ -1610,7 +1611,25 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const [saving, setSaving] = useState(false);
   const requestLock = useRef(false);
   const panelRef = useRef<HTMLDivElement>(null);
-  const busy = preparing || saving;
+  // A7.3 accounting: display state derived from the authoritative backend
+  // snapshot. No local paid/balance arithmetic — after a recorded payment
+  // the UI refreshes from the accounting endpoint.
+  const [accounting, setAccounting] = useState<AccountingData | null>(null);
+  const [accountingPhase, setAccountingPhase] = useState<'idle' | 'loading' | 'error' | 'forbidden' | 'ready'>('idle');
+  const [accountingError, setAccountingError] = useState('');
+  const [refreshingBalance, setRefreshingBalance] = useState(false);
+  const [paymentFormOpen, setPaymentFormOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [paymentReference, setPaymentReference] = useState('');
+  const [paymentError, setPaymentError] = useState('');
+  const [paymentSaving, setPaymentSaving] = useState(false);
+  const accountingGate = useRef<LatestRequestGate | null>(null);
+  if (!accountingGate.current) accountingGate.current = new LatestRequestGate();
+  const paymentErrorRef = useRef<HTMLParagraphElement>(null);
+  const busy = preparing || saving || paymentSaving;
+
+  useEffect(() => { if (paymentError) paymentErrorRef.current?.focus(); }, [paymentError]);
 
   useEffect(() => { if (panel) panelRef.current?.focus(); }, [panel]);
 
@@ -1759,6 +1778,7 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   const buttonClass = 'px-3 py-2 rounded-lg border border-slate-200 text-brand-700 text-xs font-semibold hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed';
 
   const selected = rows.find(row => row.id === selectedId);
+  const accountingView = deriveAccountingView(accounting);
   const filteredRows = filterProductionOrders(rows, filters);
   const pageRows = paginateProductionOrders(filteredRows, page, pageSize);
   const staffOptions = Array.from(new Map(rows.filter(row => row.staffId).map(row => [row.staffId!, { id: row.staffId!, name: row.staff?.user?.name || 'Assigned staff' }])).values());
@@ -1768,8 +1788,115 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   function clearFilters() { setFilters({ ...emptyProductionFilters }); setPage(1); }
   function viewOrder(id: string) { setSelectedId(id); setNotice(''); setActionError(''); setPanel(null); }
   function closeDrawer() {
-    if (requestLock.current || createSaving) return;
+    if (requestLock.current || createSaving || paymentSaving) return;
     closePanel(); setSelectedId(null); setShowNewOrder(false);
+  }
+
+  /* ----- A7.3 accounting (backend is authoritative) ----- */
+
+  async function loadAccounting(row: ProductionOrder, opts: { refreshing?: boolean } = {}) {
+    const gate = accountingGate.current!;
+    const request = gate.begin();
+    if (opts.refreshing) {
+      setRefreshingBalance(true);
+    } else {
+      setAccountingPhase('loading');
+      setAccountingError('');
+    }
+    try {
+      const response = await api(`/tailoring/orders/${row.id}/accounting`, { cache: 'no-store' });
+      if (!gate.isCurrent(request)) return; // Stale response: a newer load owns the state.
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to load accounting.');
+      setAccounting(response.data);
+      setAccountingPhase('ready');
+      setRefreshingBalance(false);
+    } catch (e) {
+      if (!gate.isCurrent(request)) return;
+      const message = e instanceof Error ? e.message : 'Unable to load accounting.';
+      if (/^Permission required:|^Not a member of this tenant|^No role assigned/.test(message)) {
+        setAccountingPhase('forbidden');
+      } else {
+        setAccountingPhase('error');
+        setAccountingError(message);
+      }
+      setRefreshingBalance(false);
+    }
+  }
+
+  // Opening a different order (or closing the drawer) resets the accounting
+  // view and reloads database-backed values afresh.
+  useEffect(() => {
+    accountingGate.current?.invalidate();
+    setAccounting(null);
+    setAccountingError('');
+    setRefreshingBalance(false);
+    setPaymentFormOpen(false);
+    setPaymentAmount('');
+    setPaymentMethod('cash');
+    setPaymentReference('');
+    setPaymentError('');
+    setAccountingPhase('idle');
+    const row = rows.find(candidate => candidate.id === selectedId);
+    if (row) {
+      setAccountingPhase('loading');
+      void loadAccounting(row);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  async function submitPayment(event: React.FormEvent) {
+    event.preventDefault();
+    const row = rows.find(candidate => candidate.id === selectedId);
+    if (!row || busy || requestLock.current) return;
+    setPaymentError('');
+    const view = deriveAccountingView(accounting);
+    const validation = validatePaymentAmount(paymentAmount, view.balance);
+    if (!validation.ok) { setPaymentError(validation.message); return; }
+    const customerId = row.customer?.id;
+    if (!customerId) { setPaymentError('Customer details for this order are unavailable.'); return; }
+
+    requestLock.current = true;
+    setPaymentSaving(true);
+    try {
+      let invoiceId = accounting?.invoice?.id;
+      if (!invoiceId) {
+        // Ensure the operational invoice server-side. No client money values:
+        // the backend derives subtotal/total/balance from the order items.
+        const ensured = await api(`/tailoring/orders/${row.id}/accounting/invoice`, { method: 'POST', body: JSON.stringify({}) });
+        if (!ensured?.success) throw new Error(ensured?.error?.message || 'Unable to prepare accounting for this order.');
+        invoiceId = ensured.data?.id;
+      }
+      if (!invoiceId) throw new Error('Unable to prepare accounting for this order.');
+      await api('/payments', {
+        method: 'POST',
+        body: JSON.stringify({
+          invoiceId,
+          customerId,
+          amount: validation.amount,
+          method: paymentMethod,
+          reference: paymentReference.trim() || undefined,
+        }),
+      });
+      // Success: close the form and let the authoritative refresh update
+      // the summary — never accumulate paid/balance locally.
+      setPaymentFormOpen(false);
+      setPaymentAmount('');
+      setPaymentMethod('cash');
+      setPaymentReference('');
+      await loadAccounting(row, { refreshing: true });
+    } catch (e) {
+      // Failure: keep the form open with the typed values for a retry.
+      setPaymentError(e instanceof Error ? e.message : 'Unable to record payment.');
+    } finally {
+      requestLock.current = false;
+      setPaymentSaving(false);
+    }
+  }
+
+  function openPaymentForm() {
+    if (accountingPhase !== 'ready') return;
+    setPaymentError('');
+    setPaymentFormOpen(true);
   }
 
   return (
@@ -1877,9 +2004,56 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
               <div className="mt-5 rounded-xl bg-brand-50 p-4"><p className="text-xs font-semibold text-brand-700 mb-3">{['delivered', 'cancelled'].includes(selected.status) ? 'Order complete · view only' : 'Recommended next step'}</p><div className="flex flex-wrap gap-2">
                 {selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'staff', title: selected.staffId ? 'Change / Unassign Staff' : 'Assign Staff' })} className={buttonClass}>{selected.staffId ? 'Change Staff' : 'Assign Staff'}</button>}
                 {actions(selected).map((action, index) => <button key={action.title} type="button" disabled={busy} onClick={() => openPanel(selected, action)} className={index === 0 ? 'px-4 py-2.5 rounded-lg bg-brand-900 text-white text-sm font-semibold hover:bg-brand-800 disabled:opacity-50' : buttonClass}>{action.title}</button>)}
+                {selected.status === 'received' && accountingPhase === 'ready' && accountingView.canRecordPayment && <button type="button" disabled={busy} onClick={openPaymentForm} className={buttonClass}>Record Advance</button>}
               </div>
               </div>
               {selected.status === 'measurement' && !selected.staffId && <p className="mt-2 text-xs text-slate-500">Assign active staff before starting Cutting.</p>}
+            </section>
+            <section aria-labelledby="order-accounting" className="border-t border-slate-100 pt-5"><h3 id="order-accounting" className="font-semibold text-sm mb-4">Accounting</h3>
+              {accountingPhase === 'loading' && <p role="status" className="text-sm text-slate-500">Loading accounting…</p>}
+              {accountingPhase === 'forbidden' && <p className="text-sm text-slate-500">Accounting access unavailable.</p>}
+              {accountingPhase === 'error' && <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm"><p>Unable to load accounting{accountingError ? `: ${accountingError}` : ''}.</p><button type="button" disabled={busy} onClick={() => loadAccounting(selected)} className={`${buttonClass} mt-2`}>Retry</button></div>}
+              {accountingPhase === 'ready' && accounting && <>
+                <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-5 gap-y-5 text-sm">
+                  <div className="min-w-0"><dt className="text-xs text-slate-500 mb-1">Order Total</dt><dd className="font-semibold break-words">{formatMoney(accountingView.total, currency)}</dd></div>
+                  <div className="min-w-0"><dt className="text-xs text-slate-500 mb-1">Paid</dt><dd className="font-semibold break-words">{formatMoney(accountingView.paid, currency)}</dd></div>
+                  <div className="min-w-0"><dt className="text-xs text-slate-500 mb-1">Balance</dt><dd className={`font-semibold break-words ${accountingView.balance > 0 ? 'text-amber-700' : 'text-emerald-700'}`}>{formatMoney(accountingView.balance, currency)}</dd></div>
+                  <div className="min-w-0"><dt className="text-xs text-slate-500 mb-1">Status</dt><dd><span className={`inline-block rounded-lg px-2 py-1 text-xs font-semibold ${accountingView.statusLabel === 'Paid' ? 'bg-emerald-50 text-emerald-700' : accountingView.statusLabel === 'Partially Paid' ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{accountingView.statusLabel}</span></dd></div>
+                </dl>
+                {selected.status === 'ready' && accountingView.balance > 0 && <p className="mt-3 p-3 rounded-xl bg-amber-50 text-amber-800 text-sm">Ready for pickup — outstanding balance {formatMoney(accountingView.balance, currency)}.</p>}
+                {selected.status === 'delivered' && accountingView.balance > 0 && <p className="mt-3 p-3 rounded-xl bg-slate-100 text-slate-700 text-sm">Delivered — outstanding balance {formatMoney(accountingView.balance, currency)}.</p>}
+                {accountingView.canRecordPayment && !paymentFormOpen && <div className="mt-4"><button type="button" disabled={busy} onClick={openPaymentForm} className="px-4 py-2.5 bg-brand-900 text-white rounded-lg text-sm font-semibold hover:bg-brand-800 disabled:opacity-50 disabled:cursor-not-allowed">Record Payment</button></div>}
+                {paymentFormOpen && <form onSubmit={submitPayment} aria-label="Record payment" className="mt-4 rounded-xl border border-slate-200 p-4 space-y-4">
+                  <h4 className="font-semibold text-sm">Record Payment</h4>
+                  <p className="text-sm text-slate-500">Outstanding Balance: <span className="font-semibold text-slate-700">{formatMoney(accountingView.balance, currency)}</span></p>
+                  <div>
+                    <label htmlFor="payment-amount" className="block text-sm font-medium mb-1">Amount *</label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input id="payment-amount" type="number" min="0" step="any" inputMode="decimal" required value={paymentAmount} onChange={e => { setPaymentAmount(e.target.value); setPaymentError(''); }} aria-invalid={paymentError ? true : undefined} aria-describedby={paymentError ? 'payment-error' : undefined} className={`${inputClass} max-w-45`} />
+                      <button type="button" disabled={paymentSaving || busy || !accountingView.canRecordPayment} onClick={() => { setPaymentAmount(String(fullBalanceAmount(accountingView.balance))); setPaymentError(''); }} className={buttonClass}>Pay Full Balance</button>
+                    </div>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div className="min-w-0"><label htmlFor="payment-method" className="block text-sm font-medium mb-1">Payment Method</label>
+                      <select id="payment-method" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} className={inputClass}>{PAYMENT_METHODS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+                    <div className="min-w-0"><label htmlFor="payment-reference" className="block text-sm font-medium mb-1">Reference / Note <span className="text-slate-400 font-normal">(optional)</span></label>
+                      <input id="payment-reference" type="text" value={paymentReference} onChange={e => setPaymentReference(e.target.value)} placeholder="Advance payment" className={inputClass} /></div>
+                  </div>
+                  {paymentError && <p id="payment-error" ref={paymentErrorRef} role="alert" tabIndex={-1} className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{paymentError}</p>}
+                  <div className="flex flex-wrap gap-2">
+                    <button type="submit" disabled={paymentSaving || busy} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{paymentSaving ? 'Recording…' : 'Record Payment'}</button>
+                    <button type="button" disabled={paymentSaving || busy} onClick={() => { setPaymentFormOpen(false); setPaymentError(''); setPaymentAmount(''); setPaymentMethod('cash'); setPaymentReference(''); }} className={buttonClass}>Cancel</button>
+                  </div>
+                </form>}
+                <div className="mt-5">
+                  <h4 className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-3">Payment History</h4>
+                  {accountingView.payments.length ? <ul className="divide-y divide-slate-100" aria-label="Payment history">{accountingView.payments.map(payment => { const line = paymentHistoryLine(payment); return <li key={payment.id} className="py-3 text-sm">
+                      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1"><p className="font-semibold">{formatMoney(line.amount, currency)}</p><p className="text-xs text-slate-500">{line.when}</p></div>
+                      <p className="text-xs text-slate-500 mt-1 break-words">{line.method}{line.reference ? ` · ${line.reference}` : ''}</p>
+                    </li>; })}</ul> : <p className="text-sm text-slate-500">{EMPTY_PAYMENT_HISTORY_TEXT}</p>}
+                </div>
+                {refreshingBalance && <p role="status" className="mt-3 text-xs text-slate-500">Refreshing balance…</p>}
+              </>}
             </section>
             <section aria-labelledby="order-measurement" className="border-t border-slate-100 pt-5"><h3 id="order-measurement" className="font-semibold text-sm mb-2">Measurement</h3>
               {selected.measurementId ? <><p className="text-xs text-slate-500 break-all mb-3">Snapshot ID: {selected.measurementId}</p>{selected.status !== 'measurement' && <p className="flex items-center gap-2 text-xs text-slate-500 mb-3"><Lock size={14} /> Locked snapshot · view only</p>}<div className="flex flex-wrap gap-2"><button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'viewMeasurement', title: 'View Measurement' })} className={buttonClass}>View Measurement</button>{selected.status === 'measurement' && <button type="button" disabled={busy} onClick={() => openPanel(selected, { kind: 'editMeasurement', title: 'Edit Measurement' })} className={buttonClass}>Edit Measurement</button>}</div></> : <p className="text-sm text-slate-500">No measurement linked to this order.{['received', 'confirmed'].includes(selected.status) && ' Take measurements after confirming the order.'}</p>}
