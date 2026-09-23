@@ -7,10 +7,12 @@ import prisma from '../lib/prisma';
 
 /**
  * A9: order-specific Fabric & Design details. Runs against serviceos_test
- * only. Covers the required Part I scenarios (20 tests):
+ * only. Covers the required Part I scenarios (31 tests):
  * empty state, create, read-back, update, no duplicates, tenant isolation,
  * RBAC, validation (source, quantity, designFields, instructions),
- * order isolation, audit events, and read-only GET.
+ * order isolation, audit events, read-only GET, and the nullable fabric
+ * source/unit semantics (optional first saves, null clears, omitted
+ * unchanged, never invented).
  */
 
 const FULL_DETAILS = {
@@ -41,7 +43,7 @@ describe('A9 tailoring order fabric & design details (real serviceos_test)', () 
   const users: string[] = [];
 
   beforeAll(async () => {
-    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database()::text AS current_database`;
+    const db = await prisma.$queryRaw<Array<{ current_database: string }>>`SELECT current_database() AS current_database`;
     expect(db[0].current_database).toBe('serviceos_test');
 
     const suffix = randomUUID();
@@ -368,5 +370,166 @@ describe('A9 tailoring order fabric & design details (real serviceos_test)', () 
     expect(await prisma.tailoringOrderDetails.count({ where: { tenantId } })).toBe(before.details);
     expect(await prisma.auditLog.count({ where: { tenantId } })).toBe(before.audits);
     expect(await prisma.tailoringOrder.count({ where: { tenantId } })).toBe(before.orders);
+  });
+
+  /* ----------------------------------------------------------
+     21-31: nullable fabricSource / fabricUnit semantics
+     (fabric may be unknown when design/instructions are first
+     saved; null clears, omitted stays unchanged, never invented)
+  ---------------------------------------------------------- */
+
+  it('21. first save with only designFields succeeds (201), fabric fields stay null', async () => {
+    const { tailoringOrder } = await makeOrder('DESIGN-ONLY');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ designFields: { collar: 'Ban Collar' } });
+    expect(response.status).toBe(201);
+    expect(response.body.success).toBe(true);
+    expect(response.body.data.fabric.source).toBeNull();
+    expect(response.body.data.fabric.unit).toBeNull();
+    expect(response.body.data.designFields).toEqual({ collar: 'Ban Collar' });
+
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricSource).toBeNull();
+    expect(row!.fabricUnit).toBeNull();
+    expect(row!.fabricType).toBeNull();
+    expect(row!.specialInstructions).toBeNull();
+  });
+
+  it('22. first save with only specialInstructions succeeds (201)', async () => {
+    const { tailoringOrder } = await makeOrder('INSTR-ONLY');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ specialInstructions: 'No stitching on the cuffs.' });
+    expect(response.status).toBe(201);
+    expect(response.body.data.specialInstructions).toBe('No stitching on the cuffs.');
+    expect(response.body.data.fabric.source).toBeNull();
+    expect(response.body.data.fabric.quantity).toBeNull();
+  });
+
+  it('23. first save without fabricSource persists source as null', async () => {
+    const { tailoringOrder } = await makeOrder('NO-SRC');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricType: 'Cotton', fabricQuantity: 3, fabricUnit: 'meter' });
+    expect(response.status).toBe(201);
+    expect(response.body.data.fabric.source).toBeNull();
+    expect(response.body.data.fabric.type).toBe('Cotton');
+    expect(response.body.data.fabric.quantity).toBe('3.00');
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricSource).toBeNull();
+    expect(row!.fabricUnit).toBe('meter');
+  });
+
+  it('24. GET on a design-only save returns the valid empty fabric object', async () => {
+    const { tailoringOrder } = await makeOrder('EMPTY-FABRIC');
+    await request(app).patch(detailsUrl(tailoringOrder.id)).set('Authorization', `Bearer ${token}`).send({ designFields: { fit: 'Regular' } });
+
+    const response = await request(app).get(detailsUrl(tailoringOrder.id)).set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    expect(response.body.data.fabric).toEqual({ source: null, type: null, color: null, quantity: null, unit: null });
+    expect(response.body.data.designFields).toEqual({ fit: 'Regular' });
+  });
+
+  it('25. explicit null clears fabricSource (other fields preserved)', async () => {
+    const { tailoringOrder } = await makeOrder('CLEAR-SRC');
+    await request(app).patch(detailsUrl(tailoringOrder.id)).set('Authorization', `Bearer ${token}`).send(FULL_DETAILS);
+
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricSource: null });
+    expect(response.status).toBe(200);
+    expect(response.body.data.fabric.source).toBeNull();
+    expect(response.body.data.fabric.type).toBe('Wash & Wear'); // preserved
+    expect(response.body.data.fabric.unit).toBe('meter'); // preserved
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricSource).toBeNull();
+  });
+
+  it('26. explicit null clears fabricUnit (never re-invented as meter)', async () => {
+    const { tailoringOrder } = await makeOrder('CLEAR-UNIT');
+    await request(app).patch(detailsUrl(tailoringOrder.id)).set('Authorization', `Bearer ${token}`).send(FULL_DETAILS);
+
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricUnit: null });
+    expect(response.status).toBe(200);
+    expect(response.body.data.fabric.unit).toBeNull();
+    expect(response.body.data.fabric.source).toBe('customer'); // preserved
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricUnit).toBeNull();
+  });
+
+  it('27. omitted fabricSource is unchanged on a later save', async () => {
+    const { tailoringOrder } = await makeOrder('OMIT-SRC');
+    await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricSource: 'shop', designFields: { collar: 'Simple' } });
+
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ designFields: { collar: 'Round' } });
+    expect(response.status).toBe(200);
+    expect(response.body.data.fabric.source).toBe('shop'); // unchanged
+    expect(response.body.data.designFields).toEqual({ collar: 'Round' }); // replaced
+  });
+
+  it('28. omitted fabricUnit is unchanged on a later save', async () => {
+    const { tailoringOrder } = await makeOrder('OMIT-UNIT');
+    await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricSource: 'customer', fabricQuantity: 2, fabricUnit: 'yard' });
+
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricColor: 'Cream' });
+    expect(response.status).toBe(200);
+    expect(response.body.data.fabric.unit).toBe('yard'); // unchanged
+    expect(response.body.data.fabric.color).toBe('Cream');
+  });
+
+  it('29. invalid non-null fabricUnit is rejected (400)', async () => {
+    const { tailoringOrder } = await makeOrder('BAD-UNIT');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricSource: 'shop', fabricQuantity: 1, fabricUnit: 'foot' });
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(await prisma.tailoringOrderDetails.count({ where: { tailoringOrderId: tailoringOrder.id } })).toBe(0);
+  });
+
+  it('30. explicit null fabricSource on first save is stored as null', async () => {
+    const { tailoringOrder } = await makeOrder('NULL-SRC');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricSource: null, designFields: { fit: 'Slim' } });
+    expect(response.status).toBe(201);
+    expect(response.body.data.fabric.source).toBeNull();
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricSource).toBeNull();
+  });
+
+  it('31. explicit null fabricUnit on first save is stored as null', async () => {
+    const { tailoringOrder } = await makeOrder('NULL-UNIT');
+    const response = await request(app)
+      .patch(detailsUrl(tailoringOrder.id))
+      .set('Authorization', `Bearer ${token}`)
+      .send({ fabricUnit: null, fabricType: 'Linen' });
+    expect(response.status).toBe(201);
+    expect(response.body.data.fabric.unit).toBeNull();
+    expect(response.body.data.fabric.type).toBe('Linen');
+    const row = await prisma.tailoringOrderDetails.findUnique({ where: { tailoringOrderId: tailoringOrder.id } });
+    expect(row!.fabricUnit).toBeNull();
   });
 });

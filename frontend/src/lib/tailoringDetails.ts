@@ -78,11 +78,11 @@ export function designFieldsForCategory(category: string | null | undefined): De
 }
 
 export type SavedFabric = {
-  source: string;
+  source: string | null;
   type: string | null;
   color: string | null;
   quantity: string | null;
-  unit: string;
+  unit: string | null;
 };
 
 export type SavedDetails = {
@@ -158,7 +158,7 @@ export type DetailsFormState = {
   fabricType: string;
   fabricColor: string;
   fabricQuantity: string;
-  fabricUnit: FabricUnit;
+  fabricUnit: FabricUnit | '';
   designFields: Record<string, string>;
   specialInstructions: string;
 };
@@ -170,7 +170,7 @@ export function emptyDetailsForm(category: string | null | undefined): DetailsFo
     fabricType: '',
     fabricColor: '',
     fabricQuantity: '',
-    fabricUnit: 'meter',
+    fabricUnit: '', // never invented — the tailor chooses when known
     designFields: Object.fromEntries(designFieldsForCategory(category).map(field => [field.key, ''])),
     specialInstructions: '',
   };
@@ -186,7 +186,7 @@ export function detailsFormFromSaved(saved: SavedDetails | null | undefined, cat
     fabricType: saved.fabric?.type ?? '',
     fabricColor: saved.fabric?.color ?? '',
     fabricQuantity: quantity === null || quantity === undefined || quantity === '' ? '' : String(quantity),
-    fabricUnit: saved.fabric?.unit === 'yard' ? 'yard' : 'meter',
+    fabricUnit: saved.fabric?.unit === 'yard' ? 'yard' : saved.fabric?.unit === 'meter' ? 'meter' : '',
     // All saved keys are kept (including ones outside the current category
     // set) so nothing silently disappears when editing.
     designFields: Object.fromEntries(designDisplayEntries(saved.designFields).map(entry => [entry.key, entry.value])),
@@ -216,9 +216,6 @@ export type NormalizedDetails = { valid: boolean; error?: string; payload?: Reco
  * enforces the same limits as the server so users get immediate feedback.
  */
 export function normalizeDetailsForm(form: DetailsFormState): NormalizedDetails {
-  if (form.fabricSource !== 'customer' && form.fabricSource !== 'shop') {
-    return { valid: false, error: 'Fabric source is required.' };
-  }
   const quantity = validateFabricQuantity(form.fabricQuantity);
   if (!quantity.ok) return { valid: false, error: quantity.error };
 
@@ -244,11 +241,11 @@ export function normalizeDetailsForm(form: DetailsFormState): NormalizedDetails 
   return {
     valid: true,
     payload: {
-      fabricSource: form.fabricSource,
+      fabricSource: form.fabricSource === 'customer' || form.fabricSource === 'shop' ? form.fabricSource : null,
       fabricType: fabricType === '' ? null : fabricType,
       fabricColor: fabricColor === '' ? null : fabricColor,
       fabricQuantity: quantity.value,
-      fabricUnit: form.fabricUnit,
+      fabricUnit: form.fabricUnit === 'meter' || form.fabricUnit === 'yard' ? form.fabricUnit : null,
       designFields,
       specialInstructions: specialInstructions === '' ? null : specialInstructions,
     },

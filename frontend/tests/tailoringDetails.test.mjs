@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import {
   detailsActionLabel, detailsAfterSave, detailsEmptyText, detailsFormFromSaved, designDisplayEntries,
   designFieldsForCategory, designGridColumns, emptyDetailsForm, fabricSourceLabel, formatQuantity,
-  formatSpecialInstructions, normalizeDetailsForm, validateFabricQuantity, cancelDetailsForm,
+  formatSpecialInstructions, formatFabricLine, normalizeDetailsForm, validateFabricQuantity, cancelDetailsForm,
 } from '../src/lib/tailoringDetails.ts';
 import { LatestRequestGate } from '../src/lib/latestRequest.ts';
 
 /**
- * A9 Fabric & Design helper tests (Part J scenarios 1-15). The drawer itself
+ * A9 Fabric & Design helper tests (Part J scenarios 1-20, incl. nullable fabric source/unit). The drawer itself
  * loads via GET /tailoring/orders/:id/details (stale-gated) and saves via
  * PATCH, then REFETCHES — these tests pin the pure logic around that flow.
  */
@@ -149,4 +149,61 @@ test('15. no details does not break the drawer (null-safe display + empty form)'
   assert.deepEqual(normalized.payload.designFields, {}, 'no design values -> empty map');
   assert.equal(normalized.payload.specialInstructions, null);
   assert.equal(emptyDetailsForm(null).fabricSource, '');
+});
+
+test('16. fabric source is optional: a blank form normalizes to null (design-only save is valid)', () => {
+  assert.equal(emptyDetailsForm('Kurta').fabricUnit, '', 'a blank form never invents a unit');
+  const form = emptyDetailsForm('Kurta');
+  form.designFields.collar = 'Ban Collar';
+  const normalized = normalizeDetailsForm(form);
+  assert.equal(normalized.valid, true);
+  assert.equal(normalized.payload.fabricSource, null);
+  assert.equal(normalized.payload.fabricUnit, null);
+  assert.deepEqual(normalized.payload.designFields, { collar: 'Ban Collar' });
+});
+
+test('17. fabric unit is optional: a quantity can be saved while the unit is still unknown (null)', () => {
+  const form = { ...detailsFormFromSaved(SAVED, 'Kurta'), fabricUnit: '', fabricQuantity: '4.5' };
+  const normalized = normalizeDetailsForm(form);
+  assert.equal(normalized.valid, true);
+  assert.equal(normalized.payload.fabricUnit, null);
+  assert.equal(normalized.payload.fabricQuantity, 4.5);
+  assert.equal(normalized.payload.fabricSource, 'customer', 'unchanged fields stay as saved');
+});
+
+test('18. saved null source/unit map to empty form fields (never invented)', () => {
+  const savedWithNulls = {
+    id: 'details-null',
+    fabric: { source: null, type: 'Cotton', color: null, quantity: '3.00', unit: null },
+    designFields: { fit: 'Regular' },
+    specialInstructions: null,
+  };
+  const form = detailsFormFromSaved(savedWithNulls, 'Kurta');
+  assert.equal(form.fabricSource, '', 'null source -> empty select, not a fabricated choice');
+  assert.equal(form.fabricUnit, '', 'null unit -> empty select, never "meter"');
+  assert.equal(form.fabricType, 'Cotton');
+  assert.equal(form.fabricQuantity, '3.00');
+});
+
+test('19. a null unit displays as a bare quantity (no invented unit)', () => {
+  assert.equal(formatQuantity('4.50', null), '4.5');
+  assert.equal(formatFabricLine({ source: null, type: 'Cotton', color: null, quantity: '3.00', unit: null }), 'Cotton · 3');
+  assert.equal(formatFabricLine({ source: null, type: null, color: null, quantity: null, unit: null }), '');
+});
+
+test('20. re-saving a design-only order keeps source/unit null when the tailor leaves them untouched', () => {
+  const saved = {
+    id: 'details-design-only',
+    fabric: { source: null, type: null, color: null, quantity: null, unit: null },
+    designFields: { collar: 'Ban Collar' },
+    specialInstructions: 'No side seams.',
+  };
+  const form = detailsFormFromSaved(saved, 'Kurta');
+  form.designFields.collar = 'Round';
+  const normalized = normalizeDetailsForm(form);
+  assert.equal(normalized.valid, true);
+  assert.equal(normalized.payload.fabricSource, null);
+  assert.equal(normalized.payload.fabricUnit, null);
+  assert.deepEqual(normalized.payload.designFields, { collar: 'Round' });
+  assert.equal(normalized.payload.specialInstructions, 'No side seams.');
 });

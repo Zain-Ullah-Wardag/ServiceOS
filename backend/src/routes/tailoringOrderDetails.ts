@@ -22,14 +22,16 @@ import { loadMeasurementOrder } from '../services/measurementTemplate.js';
  * - explicit null      = clear that field
  * - empty string       = clear (same as null) for text fields
  * - designFields, when present, REPLACES the whole map
- * - on first save every field is optional EXCEPT fabricSource
+ * - on first save EVERY field is optional (design/instructions may be saved
+ *   before any fabric information is known)
  *
  * Validation (B4-B6):
- * - fabricSource: 'customer' | 'shop' (required on first save)
+ * - fabricSource: optional; when non-null must be 'customer' | 'shop'
  * - fabricType / fabricColor: trimmed, 1..100 chars
  * - fabricQuantity: optional; when present finite, > 0, <= 99999.99
  *   (stored as Decimal(12,2), returned as a string)
- * - fabricUnit: 'meter' | 'yard'
+ * - fabricUnit: optional; when non-null must be 'meter' | 'yard'
+ *   (never invented — null stays null)
  * - designFields: plain object only (arrays rejected), max 30 entries,
  *   key <= 80 chars, value is a trimmed string <= 500 chars
  * - specialInstructions: trimmed, <= 5000 chars
@@ -71,11 +73,11 @@ const designFieldsSchema = z
 
 const detailsPatchSchema = z
   .object({
-    fabricSource: z.enum(['customer', 'shop']).optional(),
+    fabricSource: z.union([z.literal(null), z.enum(['customer', 'shop'])]).optional(),
     fabricType: clearableText(100).optional(),
     fabricColor: clearableText(100).optional(),
     fabricQuantity: clearableQuantity.optional(),
-    fabricUnit: z.enum(['meter', 'yard']).optional(),
+    fabricUnit: z.union([z.literal(null), z.enum(['meter', 'yard'])]).optional(),
     designFields: designFieldsSchema.optional(),
     specialInstructions: clearableText(5000).optional(),
   })
@@ -94,11 +96,11 @@ function cleanDesignFields(fields: Record<string, string> | undefined): Record<s
 
 function toDetailsPayload(details: {
   id: string;
-  fabricSource: string;
+  fabricSource: string | null;
   fabricType: string | null;
   fabricColor: string | null;
   fabricQuantity: unknown;
-  fabricUnit: string;
+  fabricUnit: string | null;
   designFields: unknown;
   specialInstructions: string | null;
   createdAt: Date;
@@ -161,7 +163,6 @@ router.patch(
 
       const designFields = body.designFields !== undefined ? cleanDesignFields(body.designFields) : undefined;
 
-      const fabricSource = body.fabricSource;
 
       const result = await prisma.$transaction(async (tx) => {
         const existing = await tx.tailoringOrderDetails.findUnique({
@@ -169,18 +170,18 @@ router.patch(
         });
 
         if (!existing) {
-          if (fabricSource === undefined) {
-            detailsError(400, 'FABRIC_SOURCE_REQUIRED', 'fabricSource (customer or shop) is required when saving details for the first time');
-          }
           const created = await tx.tailoringOrderDetails.create({
             data: {
               tenantId,
               tailoringOrderId: order.id,
-              fabricSource,
+              // Fabric fields are optional — design/instructions can be
+              // saved before any fabric information is known. Nulls are
+              // stored as null, never invented.
+              fabricSource: body.fabricSource ?? null,
               fabricType: body.fabricType ?? null,
               fabricColor: body.fabricColor ?? null,
               fabricQuantity: body.fabricQuantity != null ? new Prisma.Decimal(body.fabricQuantity) : null,
-              fabricUnit: body.fabricUnit ?? 'meter',
+              fabricUnit: body.fabricUnit ?? null,
               designFields: designFields ?? {},
               specialInstructions: body.specialInstructions ?? null,
             },

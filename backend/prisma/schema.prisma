@@ -570,11 +570,11 @@ model TailoringOrderDetails {
   id                  String   @id @default(uuid())
   tenantId            String   @map("tenant_id")
   tailoringOrderId    String   @unique @map("tailoring_order_id")
-  fabricSource        String   @map("fabric_source") // customer | shop
+  fabricSource        String?  @map("fabric_source") // customer | shop — optional until known
   fabricType          String?  @map("fabric_type")
   fabricColor         String?  @map("fabric_color")
   fabricQuantity      Decimal? @map("fabric_quantity") @db.Decimal(12, 2)
-  fabricUnit          String   @default("meter") @map("fabric_unit") // meter | yard
+  fabricUnit          String?  @map("fabric_unit") // meter | yard — optional, never invented
   designFields        Json     @default("{}") @map("design_fields") // plain map: design key -> simple string value
   specialInstructions String?  @map("special_instructions")
   createdAt           DateTime @default(now()) @map("created_at")
