@@ -67,6 +67,7 @@ model Tenant {
   measurementTemplates MeasurementTemplate[]
   garments             Garment[]
   tailoringOrders      TailoringOrder[]
+  tailoringOrderDetails TailoringOrderDetails[]
   garmentDesigns       GarmentDesign[]
   aiConversations      AiConversation[]
   serviceCategories    ServiceCategory[]
@@ -562,6 +563,30 @@ model GarmentDesign {
   @@map("garment_designs")
 }
 
+// A9: order-specific fabric & design details (1:1 with TailoringOrder).
+// Belongs to ONE specific tailoring order — historical orders keep their own
+// rows permanently. No row exists until details are saved (GET returns null).
+model TailoringOrderDetails {
+  id                  String   @id @default(uuid())
+  tenantId            String   @map("tenant_id")
+  tailoringOrderId    String   @unique @map("tailoring_order_id")
+  fabricSource        String   @map("fabric_source") // customer | shop
+  fabricType          String?  @map("fabric_type")
+  fabricColor         String?  @map("fabric_color")
+  fabricQuantity      Decimal? @map("fabric_quantity") @db.Decimal(12, 2)
+  fabricUnit          String   @default("meter") @map("fabric_unit") // meter | yard
+  designFields        Json     @default("{}") @map("design_fields") // plain map: design key -> simple string value
+  specialInstructions String?  @map("special_instructions")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tailoringOrder TailoringOrder @relation(fields: [tailoringOrderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("tailoring_order_details")
+}
+
 model TailoringOrder {
   id           String    @id @default(uuid())
   tenantId     String    @map("tenant_id")
@@ -583,6 +608,7 @@ model TailoringOrder {
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
   garment  Garment? @relation(fields: [garmentId], references: [id], onDelete: SetNull)
   staff    Staff?   @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  details  TailoringOrderDetails?
 
   @@unique([orderId])
   @@index([tenantId, status])

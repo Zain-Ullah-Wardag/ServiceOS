@@ -9,6 +9,7 @@ import { env } from './config/env.js';
 import authRoutes from './routes/auth.js';
 import tailoringWorkflowRoutes from './routes/tailoringWorkflow.js';
 import tailoringMeasurementRoutes from './routes/tailoringMeasurements.js';
+import tailoringOrderDetailsRoutes from './routes/tailoringOrderDetails.js';
 import tailoringOrderMeasurementRoutes from './routes/tailoringOrderMeasurement.js';
 import staffOnboardingRoutes from './routes/staffOnboarding.js';
 import { authMiddleware } from './middleware/auth.js';
@@ -2597,6 +2598,7 @@ app.post(
 
 app.use('/api/v1/tailoring/orders', tailoringOrderMeasurementRoutes);
 app.use('/api/v1/tailoring/orders', tailoringMeasurementRoutes);
+app.use('/api/v1/tailoring/orders', tailoringOrderDetailsRoutes);
 app.use('/api/v1/tailoring/orders', tailoringWorkflowRoutes);
 
 /* =========================================================

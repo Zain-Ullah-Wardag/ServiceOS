@@ -38,6 +38,12 @@ import IntakeCustomerGarment from '../components/IntakeCustomerGarment';
 import { createdRecord, intakeLineTotal, intakeOrderPayload, type IntakeCustomer, type IntakeGarment } from '../lib/intake';
 import { emptyProductionFilters, filterProductionOrders, paginateProductionOrders, productionPaymentOptions, productionStages, type ProductionFilters } from '../lib/productionView';
 import { reusableMeasurementValues, type HistoryEntry } from '../lib/measurementHistory';
+import {
+  detailsActionLabel, detailsEmptyText, detailsFormFromSaved, designDisplayEntries,
+  designFieldsForCategory, fabricSourceLabel, formatQuantity,
+  formatSpecialInstructions, normalizeDetailsForm, FABRIC_SOURCES, FABRIC_UNITS,
+  type DetailsFormState, type SavedDetails,
+} from '../lib/tailoringDetails';
 import { deriveAccountingView, EMPTY_PAYMENT_HISTORY_TEXT, fullBalanceAmount, PAYMENT_METHODS, paymentHistoryLine, validatePaymentAmount, type AccountingData } from '../lib/accounting';
 
 /* =========================================================
@@ -1396,7 +1402,7 @@ type ProductionOrder = {
   priority?: string;
   notes?: string | null;
   customer?: { id?: string; name: string };
-  garment?: { name: string } | null;
+  garment?: { name: string; category?: string | null } | null;
   staff?: { user?: { name: string }; status?: string } | null;
   order?: {
     orderNumber: string;
@@ -1665,8 +1671,18 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
   // "Use as Starting Values". Consumed (and cleared) by openPanel — nothing
   // is linked or created until the user saves the form.
   const measurementPrefill = useRef<Record<string, unknown> | null>(null);
+  // A9: order-specific Fabric & Design details (stale-safe, refetched after save).
+  const [details, setDetails] = useState<SavedDetails | null>(null);
+  const [detailsPhase, setDetailsPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [detailsError, setDetailsError] = useState('');
+  const [detailsFormOpen, setDetailsFormOpen] = useState(false);
+  const [detailsForm, setDetailsForm] = useState<DetailsFormState | null>(null);
+  const [detailsFormError, setDetailsFormError] = useState('');
+  const [detailsSaving, setDetailsSaving] = useState(false);
+  const detailsGate = useRef<LatestRequestGate | null>(null);
+  if (!detailsGate.current) detailsGate.current = new LatestRequestGate();
   const paymentErrorRef = useRef<HTMLParagraphElement>(null);
-  const busy = preparing || saving || paymentSaving;
+  const busy = preparing || saving || paymentSaving || detailsSaving;
 
   useEffect(() => { if (paymentError) paymentErrorRef.current?.focus(); }, [paymentError]);
 
@@ -1906,6 +1922,70 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     void openPanel(row, { kind: 'measurement', title: 'Take Measurement' });
   }
 
+  /* ----- A9 fabric & design details ----- */
+
+  async function loadDetails(row: ProductionOrder) {
+    const gate = detailsGate.current!;
+    const request = gate.begin();
+    setDetailsPhase('loading');
+    setDetailsError('');
+    try {
+      const response = await api(`/tailoring/orders/${row.id}/details`, { cache: 'no-store' });
+      if (!gate.isCurrent(request)) return; // Stale response: another order owns the state.
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to load details.');
+      setDetails(response.data ?? null);
+      setDetailsPhase('ready');
+    } catch (e) {
+      if (!gate.isCurrent(request)) return;
+      setDetailsPhase('error');
+      setDetailsError(e instanceof Error ? e.message : 'Unable to load details.');
+    }
+  }
+
+  function openDetailsForm() {
+    if (busy || !selected) return;
+    setDetailsFormError('');
+    setDetailsForm(detailsFormFromSaved(details, selected.garment?.category ?? null));
+    setDetailsFormOpen(true);
+  }
+
+  function cancelDetailsFormClick() {
+    if (detailsSaving) return; // D5: no accidental actions mid-save
+    // Discard the draft; the authoritative snapshot stays untouched.
+    setDetailsForm(null);
+    setDetailsFormOpen(false);
+    setDetailsFormError('');
+  }
+
+  async function saveDetails(event: React.FormEvent) {
+    event.preventDefault();
+    const form = detailsForm;
+    const row = rows.find(candidate => candidate.id === selectedId);
+    if (!form || !row || busy) return;
+    const normalized = normalizeDetailsForm(form);
+    if (!normalized.valid || !normalized.payload) {
+      setDetailsFormError(normalized.error || 'Check the form.');
+      return;
+    }
+    setDetailsSaving(true); // D3: disabled while in flight — no duplicate submits
+    setDetailsFormError('');
+    try {
+      const response = await api(`/tailoring/orders/${row.id}/details`, { method: 'PATCH', body: JSON.stringify(normalized.payload) });
+      if (!response?.success) throw new Error(response?.error?.message || 'Unable to save details.');
+      // D3: the local form is NOT authoritative — close it and refetch; the
+      // refetched server payload is what the drawer displays from now on
+      // (detailsAfterSave(form, refetched) === refetched, by construction).
+      setDetailsForm(null);
+      setDetailsFormOpen(false);
+      await loadDetails(row);
+    } catch (e) {
+      // Keep the form open with the draft so the user can fix and retry.
+      setDetailsFormError(e instanceof Error ? e.message : 'Unable to save details.');
+    } finally {
+      setDetailsSaving(false);
+    }
+  }
+
   // Opening a different order (or closing the drawer) resets the accounting
   // and measurement-history views and reloads database-backed values afresh.
   useEffect(() => {
@@ -1924,11 +2004,20 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
     setHistoryError('');
     setExpandedHistoryId(null);
     setHistoryPhase('idle');
+    // A9: reset details too — an order switch must not show another order's
+    // fabric/design data (stale responses are dropped by detailsGate).
+    setDetails(null);
+    setDetailsError('');
+    setDetailsForm(null);
+    setDetailsFormOpen(false);
+    setDetailsFormError('');
+    setDetailsPhase('idle');
     const row = rows.find(candidate => candidate.id === selectedId);
     if (row) {
       setAccountingPhase('loading');
       void loadAccounting(row);
       void loadMeasurementHistory(row);
+      void loadDetails(row);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
@@ -2171,6 +2260,61 @@ function ProductionModule({ rows, loading, error, refresh, currency }: {
                   {expandedHistoryId === entry.measurementId && <dl className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 text-xs sm:grid-cols-3">{Object.entries(entry.fields).map(([name, value]) => <div key={name} className="min-w-0"><dt className="text-slate-500 break-words">{name}</dt><dd className="mt-0.5 font-medium break-words">{typeof value === 'number' ? `${value} ${entry.unit}` : String(value)}</dd></div>)}{!Object.keys(entry.fields).length && <p className="text-slate-500">No values saved.</p>}</dl>}
                 </li>)}</ul>}
               </div>
+            </section>
+            <section aria-labelledby="order-fabric-design" className="border-t border-slate-100 pt-5"><h3 id="order-fabric-design" className="font-semibold text-sm mb-2">Fabric &amp; Design</h3>
+              {detailsPhase === 'loading' && <p role="status" className="text-sm text-slate-500">Loading fabric &amp; design…</p>}
+              {detailsPhase === 'error' && <div role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm"><p>Unable to load fabric &amp; design{detailsError ? `: ${detailsError}` : ''}.</p><button type="button" disabled={busy} onClick={() => selected && loadDetails(selected)} className={`${buttonClass} mt-2`}>Retry</button></div>}
+              {detailsPhase === 'ready' && !detailsFormOpen && details && <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+                  <div className="min-w-0">
+                    <p className="text-xs text-slate-500 mb-1">Fabric</p>
+                    {fabricSourceLabel(details.fabric.source) ? <p className="text-sm font-medium break-words">{fabricSourceLabel(details.fabric.source)}</p> : null}
+                    {details.fabric.type ? <p className="text-sm break-words">{details.fabric.type}</p> : null}
+                    {details.fabric.color ? <p className="text-sm break-words">{details.fabric.color}</p> : null}
+                    {formatQuantity(details.fabric.quantity, details.fabric.unit) ? <p className="text-sm break-words">{formatQuantity(details.fabric.quantity, details.fabric.unit)}</p> : null}
+                    {!details.fabric.type && !details.fabric.color && !formatQuantity(details.fabric.quantity, details.fabric.unit) && <p className="text-sm text-slate-500">Not recorded</p>}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-slate-500 mb-1">Special Instructions</p>
+                    <p className="text-sm break-words whitespace-pre-wrap">{formatSpecialInstructions(details.specialInstructions) || 'None'}</p>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <p className="text-xs text-slate-500 mb-2">Design</p>
+                  {designDisplayEntries(details.designFields).length ? <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">{designDisplayEntries(details.designFields).map(entry => <div key={entry.key} className="min-w-0 flex items-baseline justify-between gap-3 text-sm"><dt className="text-slate-500 truncate" title={entry.label}>{entry.label}</dt><dd className="font-medium truncate" title={entry.value}>{entry.value || '—'}</dd></div>)}</dl> : <p className="text-sm text-slate-500">No design details recorded.</p>}
+                </div>
+                <button type="button" disabled={busy} onClick={openDetailsForm} className={`${buttonClass} mt-4`}>{detailsActionLabel(details)}</button>
+              </>}
+              {detailsPhase === 'ready' && !detailsFormOpen && !details && <>
+                <p className="text-sm text-slate-500">{detailsEmptyText()}</p>
+                <button type="button" disabled={busy} onClick={openDetailsForm} className={`${buttonClass} mt-3`}>{detailsActionLabel(null)}</button>
+              </>}
+              {detailsFormOpen && detailsForm && <form onSubmit={saveDetails} aria-label="Save fabric and design details" className="mt-3 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="min-w-0"><label htmlFor="details-fabric-source" className="block text-sm font-medium mb-1">Fabric Source *</label>
+                    <select id="details-fabric-source" value={detailsForm.fabricSource} onChange={e => setDetailsForm(previous => previous && { ...previous, fabricSource: e.target.value as DetailsFormState['fabricSource'] })} className={`${inputClass} mt-1`}><option value="">Select source…</option>{FABRIC_SOURCES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+                  <div className="min-w-0"><label htmlFor="details-fabric-unit" className="block text-sm font-medium mb-1">Fabric Unit</label>
+                    <select id="details-fabric-unit" value={detailsForm.fabricUnit} onChange={e => setDetailsForm(previous => previous && { ...previous, fabricUnit: e.target.value as DetailsFormState['fabricUnit'] })} className={`${inputClass} mt-1`}>{FABRIC_UNITS.map(unit => <option key={unit} value={unit}>{unit}</option>)}</select></div>
+                  <div className="min-w-0"><label htmlFor="details-fabric-type" className="block text-sm font-medium mb-1">Fabric Type</label>
+                    <input id="details-fabric-type" type="text" value={detailsForm.fabricType} onChange={e => setDetailsForm(previous => previous && { ...previous, fabricType: e.target.value })} placeholder="Wash &amp; Wear, Cotton, Linen…" className={`${inputClass} mt-1`} /></div>
+                  <div className="min-w-0"><label htmlFor="details-fabric-color" className="block text-sm font-medium mb-1">Color</label>
+                    <input id="details-fabric-color" type="text" value={detailsForm.fabricColor} onChange={e => setDetailsForm(previous => previous && { ...previous, fabricColor: e.target.value })} placeholder="White, Black, Navy Blue…" className={`${inputClass} mt-1`} /></div>
+                  <div className="min-w-0"><label htmlFor="details-fabric-quantity" className="block text-sm font-medium mb-1">Quantity <span className="text-slate-400 font-normal">(optional)</span></label>
+                    <input id="details-fabric-quantity" type="number" min="0" step="any" inputMode="decimal" value={detailsForm.fabricQuantity} onChange={e => setDetailsForm(previous => previous && { ...previous, fabricQuantity: e.target.value })} placeholder="4.5" className={`${inputClass} mt-1`} /></div>
+                </div>
+                <div>
+                  <p className="text-sm font-medium mb-2">Design Details <span className="text-xs text-slate-400 font-normal">· {selected.garment?.name || 'no garment'}{selected.garment?.category ? ` (${selected.garment.category})` : ''}</span></p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{designFieldsForCategory(selected.garment?.category ?? null).map(field => <label key={field.key} className="text-sm font-medium">{field.label}<input type="text" value={detailsForm.designFields[field.key] ?? ''} onChange={e => setDetailsForm(previous => previous && { ...previous, designFields: { ...previous.designFields, [field.key]: e.target.value } })} className={`${inputClass} mt-1`} /></label>)}</div>
+                  {Object.keys(detailsForm.designFields).filter(key => !designFieldsForCategory(selected.garment?.category ?? null).some(field => field.key === key)).length > 0 && <div className="mt-3"><p className="text-xs font-semibold text-slate-500 mb-2">Additional Design Details</p><div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{Object.keys(detailsForm.designFields).filter(key => !designFieldsForCategory(selected.garment?.category ?? null).some(field => field.key === key)).map(key => <label key={key} className="text-sm font-medium">{key}<input type="text" value={detailsForm.designFields[key] ?? ''} onChange={e => setDetailsForm(previous => previous && { ...previous, designFields: { ...previous.designFields, [key]: e.target.value } })} className={`${inputClass} mt-1`} /></label>)}</div></div>}
+                </div>
+                <div><label htmlFor="details-special-instructions" className="block text-sm font-medium mb-1">Special Instructions <span className="text-slate-400 font-normal">(optional, max 5000 characters)</span></label>
+                  <textarea id="details-special-instructions" rows={3} maxLength={5000} value={detailsForm.specialInstructions} onChange={e => setDetailsForm(previous => previous && { ...previous, specialInstructions: e.target.value })} placeholder='e.g. "Keep sleeves slightly loose."' className={`${inputClass} mt-1`} /></div>
+                {detailsFormError && <p role="alert" className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">{detailsFormError}</p>}
+                <div className="flex flex-wrap gap-2">
+                  <button type="submit" disabled={busy} className="px-4 py-2 bg-brand-900 text-white rounded-lg text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed">{detailsSaving ? 'Saving…' : 'Save Details'}</button>
+                  <button type="button" disabled={detailsSaving || busy} onClick={cancelDetailsFormClick} className={buttonClass}>Cancel</button>
+                </div>
+              </form>}
             </section>
             <section aria-labelledby="order-services" className="border-t border-slate-100 pt-5"><h3 id="order-services" className="font-semibold text-sm mb-3">Services</h3><ul className="divide-y divide-slate-100">{selected.order?.items?.map((item, index) => <li key={index} className="flex justify-between gap-4 py-3 text-sm"><div className="min-w-0"><p className="font-medium break-words">{item.service?.name || 'Service'}</p><p className="text-xs text-slate-500 mt-1">{item.quantity ?? '—'} × {item.unitPrice != null ? formatMoney(item.unitPrice, currency) : '—'}</p></div><p className="shrink-0 font-medium">{formatMoney(item.total, currency)}</p></li>)}</ul>{!selected.order?.items?.length && <p className="text-sm text-slate-500">No service items available.</p>}</section>
             <section aria-labelledby="order-notes" className="border-t border-slate-100 pt-5"><h3 id="order-notes" className="font-semibold text-sm mb-2">Notes</h3><p className="whitespace-pre-wrap text-sm text-slate-600">{selected.notes || selected.order?.notes || 'No notes added.'}</p></section>
